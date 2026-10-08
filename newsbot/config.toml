@@ -1,0 +1,44 @@
+# News bot settings. Edit freely; changes apply at the next 15-minute check-in.
+
+timezone = "America/Edmonton"   # Calgary (MST/MDT)
+
+# Where the digest goes. Relative paths are relative to this folder. To read and edit it
+# in Obsidian, point this at your vault, e.g. 'C:\Users\you\Documents\Vault\News.md'
+# (single quotes so the backslashes are kept as-is).
+output = "news.md"
+
+max_items_per_subject = 10
+fail_threshold = 0.5   # if this share of feeds fails, keep the previous edition and retry
+
+# name = "HH:MM" in local time. Delete a line to go to two editions a day.
+[editions]
+Morning = "06:00"
+Afternoon = "13:00"
+Evening = "19:00"
+
+# subject = [feeds]. A story appears once, under the first subject that lists it.
+# NOT YET VERIFIED: the Calgary/Alberta/CBC URLs could not be reached from the build
+# environment. Run `python check_feeds.py` once and replace any that fail.
+[subjects]
+"Calgary & Alberta" = [
+    "https://www.cbc.ca/webfeed/rss/rss-canada-calgary",
+    "https://globalnews.ca/calgary/feed/",
+    "https://calgaryherald.com/feed",
+    "https://www.alberta.ca/newsroom/newsroom.cfm?deptID=135",
+]
+"Weather alerts" = [
+    "https://weather.gc.ca/rss/warning/ab-52_e.xml",   # Environment Canada, Calgary
+]
+"Canada" = [
+    "https://www.cbc.ca/webfeed/rss/rss-canada",
+]
+"World" = [
+    "https://feeds.bbci.co.uk/news/world/rss.xml",
+    "https://www.theguardian.com/world/rss",
+    "https://rss.dw.com/rdf/rss-en-world",
+    "https://www.aljazeera.com/xml/rss/all.xml",
+]
+"Science & Technology" = [
+    "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
+    "https://feeds.bbci.co.uk/news/technology/rss.xml",
+]
