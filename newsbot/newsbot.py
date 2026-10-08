@@ -165,7 +165,9 @@ def clean_link(link):
 
 def clean_title(title):
     """Tidy a headline without changing its meaning: one line, no clickbait prefix, no '!!!'."""
-    title = " ".join(title.replace("<!--", "").replace("-->", "").split())
+    while "<!--" in title or "-->" in title:  # repeat: "<!<!---- x ---->>" hides a marker
+        title = title.replace("<!--", "").replace("-->", "")
+    title = " ".join(title.split())
     title = CLICKBAIT.sub("", title)
     return re.sub(r"!{2,}", "", title).strip()
 
@@ -236,7 +238,7 @@ def collect(cfg, db, fetch, now):
                 if not title or not link:
                     continue
                 db.execute("INSERT OR IGNORE INTO items VALUES (?,?,?,?,?,?)",
-                           (link, title, source, subject, entry_time(e), now.isoformat()))
+                           (link, title, source, subject, entry_time(e, now), now.isoformat()))
             except Exception as exc:  # one odd entry must not sink the edition
                 log.warning("Skipped an entry in %s: %s", url, exc)
     db.execute("DELETE FROM items WHERE first_seen < ?", ((now - 3 * WINDOW).isoformat(),))
@@ -244,17 +246,22 @@ def collect(cfg, db, fetch, now):
     return failed
 
 
-def entry_time(entry):
-    """Publication time as ISO text (feedparser gives UTC), or None if missing or nonsense."""
+def entry_time(entry, now):
+    """Publication time as ISO text (feedparser gives UTC), or None if missing or nonsense
+    (placeholders like 1 Jan 0001, or dates in the future)."""
     ts = entry.get("published_parsed") or entry.get("updated_parsed")
     try:
-        return datetime(*ts[:6], tzinfo=timezone.utc).isoformat() if ts else None
+        when = datetime(*ts[:6], tzinfo=timezone.utc) if ts else None
     except (TypeError, ValueError, OverflowError):
         return None
+    if when is None or when.year < 2000 or when > now + timedelta(days=1):
+        return None
+    return when.isoformat()
 
 
 # Environment Canada lists "No watches or warnings in effect" or "... WARNING ENDED" too.
 ALL_CLEAR = re.compile(r"^no\b.*\bin effect\b|\bended\b", re.I)
+MAX_ALERTS = 5
 
 
 def check_alerts(cfg, fetch, now):
@@ -265,16 +272,16 @@ def check_alerts(cfg, fetch, now):
         items, failed = [], False
         for url in urls:
             feed, error = _try_fetch(fetch, url)
-            if error:
-                log.warning("Alert feed failed: %s (%s)", url, error)
+            if error or not feed.entries:  # a working warnings feed always says *something*
+                log.warning("Alert feed failed: %s (%s)", url, error or "no entries")
                 failed = True
                 continue
-            for e in feed.entries:
+            for e in feed.entries[:MAX_ALERTS]:
                 title = clean_title(e.get("title", ""))
                 if title and not ALL_CLEAR.search(title):
                     items.append({"title": title, "link": clean_link(e.get("link")),
                                   "source": source_name(cfg, url, clean_title(feed.feed.get("title", ""))),
-                                  "time": entry_time(e)})
+                                  "time": entry_time(e, now)})
         groups.append({"name": name, "items": items, "failed": failed})
     return {"checked": now.isoformat(), "groups": groups}
 
@@ -320,7 +327,8 @@ def select_items(cfg, db, since, now):
 
 def md_escape(text):
     """Headlines stay plain text in Markdown: no links, autolinks or HTML from feed text."""
-    return text.replace("<", r"\<").replace("[", r"\[").replace("]", r"\]")
+    return (text.replace("\\", "\\\\").replace("<", "&lt;")
+                .replace("[", r"\[").replace("]", r"\]"))
 
 
 def missing_note(missing):
@@ -580,9 +588,12 @@ def open_page(cfg, now):
         with RunLock(DATA_DIR / "newsbot.lock"):
             write_html(cfg, open_db(), now)
     except AlreadyRunning:
+        if not cfg["html_output"].exists():
+            print("A news run is in progress and there is no reading page yet; try again in a minute.")
+            return 1
         print("A news run is in progress; opening the page as it is.")
     if not cfg["html_output"].exists():
-        print("No reading page yet; try again in a minute.")
+        print(f"Could not build the reading page; see {DATA_DIR / 'newsbot.log'}.")
         return 1
     webbrowser.open(cfg["html_output"].as_uri())
     return 0

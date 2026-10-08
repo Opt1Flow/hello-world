@@ -60,6 +60,10 @@
     color: var(--warn-text); background: var(--warn-bg); border-radius: var(--radius);
     font-size: 0.8rem; padding: 6px 12px; margin: 8px 0 0;
   }
+  .late button {
+    font: inherit; color: var(--warn-text); background: transparent; cursor: pointer;
+    border: 1px solid var(--warn-text); border-radius: 999px; padding: 1px 10px; margin-left: 6px;
+  }
   .tools { display: flex; gap: 8px; align-items: center; margin: 10px 0 8px; }
   .tools input {
     flex: 1; min-width: 0; font: inherit; font-size: 0.85rem; color: var(--text);
@@ -93,7 +97,8 @@
 
   /* Editions, warnings and subjects */
   main { padding-bottom: 48px; }
-  .edition[hidden], .story[hidden], .subject[hidden], .no-match[hidden], .late[hidden] { display: none; }
+  .edition[hidden], .story[hidden], .subject[hidden], .no-match[hidden], .late[hidden],
+  .alert[hidden], .alert li[hidden] { display: none; }
   .ed-head { margin: 22px 0 6px; }
   h2 { font-size: 1.15rem; margin: 0; }
   .ed-sub { color: var(--muted); font-size: 0.85rem; margin: 2px 0 0; }
@@ -142,8 +147,10 @@
     padding: 14px 18px; margin-top: 22px;
   }
   /* While searching, every edition with a match is shown; hide the per-edition extras. */
-  .searching .jump, .searching .quiet, .searching .alert, .searching .alert-quiet,
-  .searching .note, .searching .empty { display: none; }
+  @media screen {
+    .searching .jump, .searching .quiet, .searching .alert-quiet,
+    .searching .note, .searching .empty { display: none; }
+  }
 
   footer { color: var(--muted); font-size: 0.75rem; padding: 18px 16px 32px; border-top: 1px solid var(--line); }
   footer code { word-break: break-all; }
@@ -158,7 +165,7 @@
   @media print {
     header.top { position: static; backdrop-filter: none; }
     .tools, .tabs, .jump, .late, .no-match { display: none; }
-    .edition[hidden], .subject[hidden], .story[hidden] { display: block; }
+    .edition[hidden], .subject[hidden], .story[hidden], .alert[hidden], .alert li[hidden] { display: block; }
   }
 </style>
 </head>
@@ -169,7 +176,7 @@
       <h1>News Digest</h1>
       <p class="status" id="status" {{STATUS_DATA}}>{{STATUS}}</p>
     </div>
-    <p class="late" id="late" role="status" hidden></p>
+    <p class="late" id="late" role="status" hidden><span id="late-text"></span><button id="late-reload" type="button">Reload</button></p>
     <div class="tools">
       <input id="filter" type="search" placeholder="Search all editions" aria-label="Search all editions">
       <button id="smaller" type="button" aria-label="Smaller text">A&minus;</button>
@@ -195,8 +202,19 @@
   function each(list, fn) { Array.prototype.forEach.call(list, fn); }
   function load(key) { try { return localStorage.getItem("newsbot." + key); } catch (e) { return null; } }
   function save(key, value) { try { localStorage.setItem("newsbot." + key, value); } catch (e) {} }
-  function sload(key) { try { return sessionStorage.getItem("newsbot." + key); } catch (e) { return null; } }
-  function ssave(key, value) { try { sessionStorage.setItem("newsbot." + key, value); } catch (e) {} }
+  // Per-tab memory (your place, the last reload). window.name is the fallback when the
+  // browser blocks storage for local files; it also survives a reload of this tab.
+  var tabMemory = {};
+  try { tabMemory = JSON.parse(window.name || "{}") || {}; } catch (e) { tabMemory = {}; }
+  function sload(key) {
+    try { var v = sessionStorage.getItem("newsbot." + key); if (v !== null) return v; } catch (e) {}
+    return Object.prototype.hasOwnProperty.call(tabMemory, key) ? tabMemory[key] : null;
+  }
+  function ssave(key, value) {
+    tabMemory[key] = value;
+    try { window.name = JSON.stringify(tabMemory); } catch (e) {}
+    try { sessionStorage.setItem("newsbot." + key, value); } catch (e) {}
+  }
 
   // ---- Text size
   var sizes = [16, 18, 20, 22, 24];
@@ -249,6 +267,11 @@
     return weekday(d) + " " + clock(d);
   }
   var statusEl = document.getElementById("status"), lateEl = document.getElementById("late");
+  var lateText = document.getElementById("late-text");
+  var DUE_AFTER = 16 * 60000;   // the bot checks every 15 minutes, so by then the edition exists
+  function nextDue() { return Date.parse(statusEl.getAttribute("data-next") || ""); }
+  function isDue() { var next = nextDue(); return !isNaN(next) && Date.now() > next + DUE_AFTER; }
+  function lastReload() { return Number(sload("lastReload") || 0); }
   function updateStatus() {
     var updated = Date.parse(statusEl.getAttribute("data-updated") || "");
     var next = Date.parse(statusEl.getAttribute("data-next") || "");
@@ -259,14 +282,17 @@
       parts.push("Next: " + nextName + " " + (sameDay(n, new Date()) ? "at " : weekday(n) + " ") + clock(n));
     }
     if (parts.length) statusEl.textContent = parts.join(" · ");
-    var late = !isNaN(next) && Date.now() > next + 20 * 60000;
-    lateEl.hidden = !late;
-    if (late) lateEl.textContent = "The " + nextName + " edition (" + clock(new Date(next)) +
-      ") hasn't arrived yet. Right after the laptop wakes it comes within 15 minutes; " +
-      "otherwise check data/newsbot.log in the bot's folder.";
+    lateEl.hidden = !isDue();
+    if (lateEl.hidden) return;
+    var label = "The " + nextName + " edition (" + clock(new Date(next)) + ")";
+    // Only call it late once a reload has looked and found nothing new.
+    lateText.textContent = lastReload() > next + DUE_AFTER
+      ? label + " hasn't arrived yet. Right after the laptop wakes it comes within 15 minutes; " +
+        "otherwise check data/newsbot.log in the bot's folder. "
+      : label + " should be out now. ";
   }
   function updateTimes() {
-    each(document.querySelectorAll(".meta time"), function (t) {
+    each(document.querySelectorAll(".meta time, .alert-quiet time"), function (t) {
       var ms = Date.parse(t.getAttribute("datetime"));
       if (!t.title && !isNaN(ms)) t.title = fmtFull.format(new Date(ms));
       var text = ago(ms);
@@ -324,15 +350,15 @@
   // ---- Search: looks through every edition and shows each one that has a match
   function applyFilter() {
     var q = filter.value.trim().toLowerCase();
-    each(document.querySelectorAll(".story, .subject"), function (el) { el.hidden = false; });
+    each(document.querySelectorAll(".story, .subject, .alert, .alert li"), function (el) { el.hidden = false; });
     if (!q) { root.classList.remove("searching"); noMatch.hidden = true; if (current) show(current); return; }
     root.classList.add("searching");
     var total = 0;
     editions.forEach(function (ed) {
       var inEdition = 0;
-      each(ed.querySelectorAll(".subject"), function (sub) {
+      each(ed.querySelectorAll(".subject, .alert"), function (sub) {
         var shown = 0;
-        each(sub.querySelectorAll(".story"), function (st) {
+        each(sub.querySelectorAll(".story, li"), function (st) {
           st.hidden = st.textContent.toLowerCase().indexOf(q) < 0;
           if (!st.hidden) shown++;
         });
@@ -350,6 +376,9 @@
     tab.addEventListener("click", function (e) {
       e.preventDefault();
       if (filter.value) { filter.value = ""; applyFilter(); }
+      if (location.hash) {   // an old #edition in the address would win on the next reload
+        try { history.replaceState(null, "", location.href.split("#")[0]); } catch (err) {}
+      }
       show(tab.getAttribute("data-target"));
       window.scrollTo(0, 0);
     });
@@ -380,7 +409,9 @@
   // otherwise open the newest edition.
   function editionOf(el) { return el && (el.classList.contains("edition") ? el : el.closest(".edition")); }
   function fromHash() {
-    var target = location.hash.length > 1 && document.getElementById(decodeURIComponent(location.hash.slice(1)));
+    var id = location.hash.slice(1);
+    try { id = decodeURIComponent(id); } catch (e) {}   // e.g. a stray "%" in a pasted link
+    var target = id && document.getElementById(id);
     return target ? { target: target, edition: editionOf(target) } : null;
   }
   var state = null;
@@ -412,29 +443,33 @@
   });
 
   // ---- Refreshing. The bot rewrites this file; the page picks up new editions by reloading:
-  // when you come back after 10+ minutes away, or (if it stays open on screen) once the next
-  // edition is due and you haven't touched the page for 5 minutes. Your place is kept unless
-  // there is something new to show.
+  // when you come back after 10+ minutes away or once the next edition is due, and, while it
+  // stays open on screen, every 10 minutes after an edition is due if you haven't touched it
+  // for 5 minutes. Your place is kept unless there is something new to show.
   function saveState() {
     ssave("state", JSON.stringify({ id: current, newest: newest, y: window.scrollY, filter: filter.value }));
   }
-  function reload() { saveState(); location.replace(location.href.split("#")[0]); }
+  function reload() {
+    saveState();
+    ssave("lastReload", String(Date.now()));
+    location.replace(location.href.split("#")[0]);
+  }
+  document.getElementById("late-reload").addEventListener("click", reload);
   var hiddenAt = 0, lastActivity = Date.now();
   ["scroll", "keydown", "pointerdown", "input"].forEach(function (type) {
     window.addEventListener(type, function () { lastActivity = Date.now(); }, { passive: true });
   });
   document.addEventListener("visibilitychange", function () {
-    if (document.hidden) { hiddenAt = Date.now(); saveState(); }
-    else if (hiddenAt && Date.now() - hiddenAt > 10 * 60000) reload();
+    if (document.hidden) { hiddenAt = Date.now(); saveState(); return; }
+    var awayLong = hiddenAt && Date.now() - hiddenAt > 10 * 60000;
+    if (awayLong || (isDue() && Date.now() - lastReload() > 2 * 60000)) reload();
   });
   window.addEventListener("pagehide", saveState);
   setInterval(function () {
     updateTimes();
-    var next = Date.parse(statusEl.getAttribute("data-next") || "");
-    if (document.hidden || isNaN(next) || Date.now() < next + 16 * 60000) return;
+    if (document.hidden || !isDue()) return;
     if (Date.now() - lastActivity < 5 * 60000 || document.activeElement === filter) return;
-    if (sload("reloadedFor") === String(next)) return;   // once per edition, even if it's late
-    ssave("reloadedFor", String(next));
+    if (Date.now() - lastReload() < 10 * 60000) return;   // late edition: try again every 10 min
     reload();
   }, 60000);
 })();

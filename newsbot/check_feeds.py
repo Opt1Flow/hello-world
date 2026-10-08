@@ -22,6 +22,10 @@ for subject, urls in groups.items():
                  if (ts := e.get("published_parsed") or e.get("updated_parsed"))]
         newest = f"{max(dates):%Y-%m-%d %H:%M} UTC" if dates else "no dates"
         recent = sum(d >= cutoff for d in dates)
-        # an alert feed with nothing recent just means no warnings, which is fine
-        status = "OK   " if recent or not dates or subject.endswith(" alerts") else "STALE"
+        # an alert feed with nothing recent just means no warnings, which is fine; but a
+        # warnings feed with no entries at all isn't working (it always says *something*)
+        if subject.endswith(" alerts"):
+            status = "OK   " if feed.entries else "EMPTY"
+        else:
+            status = "OK   " if recent or not dates else "STALE"
         print(f"{status} {len(feed.entries):3} items | {recent:3} in 24h | newest: {newest} | {subject} | {url}")

@@ -51,15 +51,16 @@ Evening = "19:00"
 ]
 
 # Short names shown next to each headline (otherwise the feed's own, often long, title).
+# Give each feed in a subject its own name: feeds with the same name share one turn.
 [sources]
 "https://www.cbc.ca/webfeed/rss/rss-canada-calgary" = "CBC Calgary"
 "https://globalnews.ca/calgary/feed/" = "Global News"
 "https://calgaryherald.com/feed" = "Calgary Herald"
 "https://weather.gc.ca/rss/battleboard/ab12_e.xml" = "Environment Canada"
 "https://www.cbc.ca/webfeed/rss/rss-canada" = "CBC"
-"https://feeds.bbci.co.uk/news/world/rss.xml" = "BBC"
+"https://feeds.bbci.co.uk/news/world/rss.xml" = "BBC World"
 "https://www.theguardian.com/world/rss" = "The Guardian"
 "https://rss.dw.com/rdf/rss-en-world" = "DW"
 "https://www.aljazeera.com/xml/rss/all.xml" = "Al Jazeera"
-"https://feeds.bbci.co.uk/news/science_and_environment/rss.xml" = "BBC"
-"https://feeds.bbci.co.uk/news/technology/rss.xml" = "BBC"
+"https://feeds.bbci.co.uk/news/science_and_environment/rss.xml" = "BBC Science"
+"https://feeds.bbci.co.uk/news/technology/rss.xml" = "BBC Technology"

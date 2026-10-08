@@ -46,7 +46,10 @@ def long_date(dt, tz):
 
 
 def time_tag(dt, tz, ref):
-    return f'<time datetime="{esc(dt.isoformat())}">{esc(short_time(dt, tz, ref))}</time>'
+    try:
+        return f'<time datetime="{esc(dt.isoformat())}">{esc(short_time(dt, tz, ref))}</time>'
+    except (OverflowError, ValueError):  # a nonsense date must never stop the page
+        return ""
 
 
 def headline(item):
@@ -63,9 +66,11 @@ def render_story(item, tz, ref):
     return f'<li class="story">{headline(item)}<div class="meta">{meta}</div></li>'
 
 
-def render_alerts(alerts, tz, ref):
-    """Warnings first: a coloured box while one is in effect, one quiet line otherwise."""
+def render_alerts(alerts, tz, ref, latest):
+    """Warnings first: a coloured box while one is in effect, one quiet line otherwise.
+    Only the newest edition speaks in the present tense; older ones say how it was then."""
     out = []
+    when = "in effect" if latest else "at the time of this edition"
     checked = parse_time((alerts or {}).get("checked"))
     for group in (alerts or {}).get("groups", []):
         name, items = group["name"], group["items"]
@@ -75,12 +80,12 @@ def render_alerts(alerts, tz, ref):
                 + (f' · issued {time_tag(parse_time(a["time"]), tz, ref)}' if a.get("time") else "")
                 + '</div></li>' for a in items)
             out.append(f'<section class="alert" aria-label="{esc(name)} warnings">'
-                       f'<h3>{esc(name)} {"warning" if len(items) == 1 else "warnings"} in effect</h3>'
+                       f'<h3>{esc(name)} {"warning" if len(items) == 1 else "warnings"} {when}</h3>'
                        f'<ul>{rows}</ul></section>')
         elif group.get("failed"):
             out.append(f'<p class="alert-quiet">{esc(name)} warnings could not be checked this time.</p>')
         else:
-            out.append(f'<p class="alert-quiet">{esc(name)}: no warnings in effect'
+            out.append(f'<p class="alert-quiet">{esc(name)}: no warnings {when}'
                        + (f' · checked {time_tag(checked, tz, ref)}' if checked else "") + '</p>')
     return "".join(out)
 
@@ -98,7 +103,7 @@ def missing_text(missing):
                      for name, subjects in by_name.items())
 
 
-def render_edition(ed, tz, latest):
+def render_edition(ed, tz, latest, now):
     name = ed["name"]
     attrs = (f'id="ed-{slug(name)}" class="edition" data-edition="{esc(name)}"'
              + (f' data-produced="{esc(ed["produced_at"].isoformat())}"' if ed["kind"] == "ok" else "")
@@ -109,7 +114,7 @@ def render_edition(ed, tz, latest):
     if ed["kind"] == "legacy":
         made = ed["produced_at"]
         return (f'<section {attrs}><div class="ed-head"><h2>{esc(name)}</h2></div><p class="empty">'
-                f'Made at {time_tag(made, tz, made)}, before this reading page existed. Its stories '
+                f'Made at {time_tag(made, tz, now)}, before this reading page existed. Its stories '
                 f'are in your news.md file; from the next edition on they appear here too.</p></section>')
     if ed["kind"] == "skipped":
         return (f'<section {attrs}><div class="ed-head"><h2>{esc(name)}</h2></div>'
@@ -128,7 +133,7 @@ def render_edition(ed, tz, latest):
     if missing:
         out.append(f'<p class="note">Missing this time: {esc(missing_text(missing))}</p>')
     out.append('</div>')
-    out.append(render_alerts(ed.get("alerts"), tz, produced))
+    out.append(render_alerts(ed.get("alerts"), tz, produced, latest))
     if filled:
         out.append('<nav class="jump" aria-label="Subjects">' + "".join(
             f'<a href="#{slug(name)}-{slug(s)}">{esc(s)} <span class="count">{len(items)}</span></a>'
@@ -174,7 +179,7 @@ def render_page(editions, tz, now, next_slot, problem, md_path, first_run=False)
     tabs = "".join(
         f'<a class="tab tab-{e["kind"]}" href="#ed-{slug(e["name"])}" data-target="ed-{slug(e["name"])}">'
         f'{esc(e["name"])} <span class="tab-time">{esc(e["time"])}</span></a>' for e in editions)
-    body = "".join(render_edition(e, tz, e is latest) for e in editions)
+    body = "".join(render_edition(e, tz, e is latest, now) for e in editions)
     if first_run:
         body = ('<p class="welcome">No editions yet. The first one is made at the next scheduled '
                 'time, or run <code>newsbot.py run Morning</code> to make one now.</p>' + body)

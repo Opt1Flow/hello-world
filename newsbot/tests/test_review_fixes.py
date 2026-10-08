@@ -186,3 +186,46 @@ def test_open_while_a_run_is_busy_opens_the_existing_page(cfg, db, monkeypatch, 
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
         assert nb.open_page(cfg, at("2026-10-08 06:30")) == 0
     assert opened == [cfg["html_output"].as_uri()]
+
+
+# ---- second review round
+
+def test_nested_marker_in_a_headline_cannot_reach_news_md(cfg, db):
+    feeds = {"https://a.test/rss": [("Odd <!<!---- Evening start ---->> title", "https://a.test/1", None)]}
+    assert nb.run_due(cfg, db, at("2026-10-08 06:05"), fake_fetch(feeds))
+    assert nb.run_due(cfg, db, at("2026-10-08 13:05"), fake_fetch(feeds))   # file still valid
+    nb.check_markers(cfg["output"].read_text(), cfg["editions"])
+
+
+def test_backslash_in_a_headline_cannot_unescape_a_link(cfg, db):
+    feeds = {"https://a.test/rss": [(r"x \[a\](file:///C:/x) and \<search-ms:q>", "https://a.test/1", None)]}
+    nb.run_due(cfg, db, at("2026-10-08 06:05"), fake_fetch(feeds))
+    md = cfg["output"].read_text()
+    assert r"x \\\[a\\\](file:///C:/x) and \\&lt;search-ms:q>" in md
+
+
+def test_placeholder_alert_date_does_not_stop_the_page(cfg, db):
+    cfg["alerts"] = {"Weather": ["https://weather.test/rss"]}
+    fetch = raw_fetch({"https://weather.test/rss": [dict(WARNING, published_parsed=(1, 1, 1, 0, 0, 0, 0, 1, 0))]})
+    nb.run_due(cfg, db, at("2026-10-08 06:05"), fetch)
+    assert "SNOWFALL WARNING" in page(cfg)
+
+
+def test_empty_alert_feed_is_not_an_all_clear(cfg, db):
+    cfg["alerts"] = {"Weather": ["https://weather.test/rss"]}
+    nb.run_due(cfg, db, at("2026-10-08 06:05"), raw_fetch({"https://weather.test/rss": []}))
+    assert "Weather warnings could not be checked this time" in page(cfg)
+    assert "no warnings" not in page(cfg)
+
+
+def test_older_editions_describe_warnings_in_the_past(cfg, db):
+    cfg["alerts"] = {"Weather": ["https://weather.test/rss"]}
+    calm = raw_fetch({"https://weather.test/rss": [ALL_CLEAR]})
+    snow = raw_fetch({"https://weather.test/rss": [WARNING]})
+    nb.run_due(cfg, db, at("2026-10-07 19:05"), calm)
+    nb.run_due(cfg, db, at("2026-10-08 06:05"), snow)
+    html = page(cfg)
+    evening = html[html.index('id="ed-evening"'):]
+    morning = html[html.index('id="ed-morning"'):html.index('id="ed-afternoon"')]
+    assert "no warnings at the time of this edition" in evening
+    assert "Weather warning in effect" in morning
