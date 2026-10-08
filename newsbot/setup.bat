@@ -31,5 +31,7 @@ echo Running tests ...
 .venv\Scripts\python -m pytest -q tests
 
 echo.
-echo Done. Next: .venv\Scripts\python newsbot.py run Morning
+echo Done. Next, make an edition and open the reading page:
+echo     .venv\Scripts\python newsbot.py run Morning
+echo     .venv\Scripts\python newsbot.py open
 pause

@@ -1,7 +1,16 @@
-# News bot (step 1: reliable scheduling)
+# News bot
 
-Builds a Calgary + world news digest three times a day (06:00, 13:00, 19:00) into one
-Markdown file you can read and edit, for example in Obsidian.
+Builds a Calgary + world news digest three times a day (06:00, 13:00, 19:00).
+
+## Reading the news
+
+- **`news.html`** is the reading page: open it with `.venv\Scripts\python newsbot.py open`
+  (or double-click the file) and keep the tab open or bookmark it. Each edition is a tab,
+  weather warnings sit at the top while they're in effect, and the search box looks through
+  all editions (press `/` to jump to it). A dot marks an edition you haven't opened yet.
+  The page refreshes itself when a new edition is due and says so if one is late.
+- **`news.md`** is the editable copy for your notes (for example in Obsidian). Only the
+  parts between the edition markers are ever replaced.
 
 ## How it works
 
@@ -25,10 +34,11 @@ Markdown file you can read and edit, for example in Obsidian.
 1. **Double-click `setup.bat`** in this folder. It creates the Python environment
    (`.venv`), installs the libraries, checks every feed (`OK` / `FAIL`) and runs the
    tests. If any feed says `FAIL`, replace it in `config.toml`.
-2. In PowerShell, inside this folder, make one edition now and open `news.md`:
+2. In PowerShell, inside this folder, make one edition now and open the reading page:
 
    ```powershell
    .venv\Scripts\python newsbot.py run Morning
+   .venv\Scripts\python newsbot.py open
    ```
 
 3. Register the scheduled task:
@@ -43,14 +53,16 @@ Then open Task Scheduler, select **NewsBot**, and confirm the trigger says
 *Repeat task every 15 minutes for a duration of: Indefinitely*. If registering fails with
 "Access is denied", run PowerShell as Administrator once.
 
-To use Obsidian, set `output` in `config.toml` to a path inside your vault.
+To use Obsidian, set `output` in `config.toml` to a path inside your vault. The reading
+page then goes next to it (`html_output` changes that).
 
 ## Day to day
 
 - `newsbot.py status` lists recent runs (`ok`, or `skipped` for a missed edition).
 - Logs are in `data/newsbot.log`.
-- Change feeds, subjects or edition times in `config.toml`. Delete one line under
-  `[editions]` to go to two editions a day.
+- Change feeds, subjects, warning feeds (`[alerts]`), short source names (`[sources]`) or
+  edition times in `config.toml`. Delete one line under `[editions]` to go to two
+  editions a day.
 
 ## Not done yet
 

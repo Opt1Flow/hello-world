@@ -96,4 +96,4 @@ def test_pending_editions_and_welcome_before_first_run(cfg, db):
 
 def test_next_edition_tomorrow(cfg, db):
     nb.run_due(cfg, db, at("2026-10-08 19:05"), fake_fetch({}))
-    assert "Next: Morning tomorrow at 06:00" in page(cfg)
+    assert "Next: Morning Fri 06:00" in page(cfg)                  # weekday, never a stale "tomorrow"

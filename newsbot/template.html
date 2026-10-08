@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-tz="{{TZ}}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -11,35 +11,43 @@
   /* Colours live here as tokens, so light and dark mode only swap values. */
   :root {
     --bg: #f6f5f1; --surface: #ffffff; --text: #1c1c1e; --muted: #5d6167; --line: #e2dfd8;
-    --accent: #1d5bb8; --accent-soft: #e6eefb; --visited: #6e7076;
-    --warn-bg: #fff3dc; --warn-text: #6e4300; --dot: #d0410f;
+    --control: #858a92; --accent: #1d5bb8; --accent-soft: #e6eefb; --visited: #5d6167;
+    --warn-bg: #fff3dc; --warn-text: #6e4300; --warn-edge: #d0410f; --dot: #d0410f;
     --size: 18px; --radius: 12px;
   }
-  @media (prefers-color-scheme: dark) {
+  @media screen and (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --bg: #131416; --surface: #1c1d21; --text: #ebebec; --muted: #a2a6ad; --line: #2d2f35;
-      --accent: #8db6f7; --accent-soft: #1d2a40; --visited: #8d9097;
-      --warn-bg: #3a2b12; --warn-text: #f5c56f; --dot: #ff8d5c;
+      --control: #6b7079; --accent: #8db6f7; --accent-soft: #1d2a40; --visited: #a2a6ad;
+      --warn-bg: #3a2b12; --warn-text: #f5c56f; --warn-edge: #ff8d5c; --dot: #ff8d5c;
     }
   }
-  :root[data-theme="dark"] {
-    --bg: #131416; --surface: #1c1d21; --text: #ebebec; --muted: #a2a6ad; --line: #2d2f35;
-    --accent: #8db6f7; --accent-soft: #1d2a40; --visited: #8d9097;
-    --warn-bg: #3a2b12; --warn-text: #f5c56f; --dot: #ff8d5c;
+  @media screen {
+    :root[data-theme="dark"] {
+      --bg: #131416; --surface: #1c1d21; --text: #ebebec; --muted: #a2a6ad; --line: #2d2f35;
+      --control: #6b7079; --accent: #8db6f7; --accent-soft: #1d2a40; --visited: #a2a6ad;
+      --warn-bg: #3a2b12; --warn-text: #f5c56f; --warn-edge: #ff8d5c; --dot: #ff8d5c;
+    }
   }
 
   html { font-size: var(--size); -webkit-text-size-adjust: 100%; }
+  @media (min-width: 521px) { html { scroll-padding-top: 12rem; } }  /* refined by the script */
   body {
     margin: 0; background: var(--bg); color: var(--text); line-height: 1.5;
     font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   }
   .wrap { max-width: 44rem; margin: 0 auto; padding: 0 16px; }
   a { color: var(--accent); }
-  a:focus-visible, button:focus-visible, input:focus-visible {
+  a:focus-visible, button:focus-visible, input:focus-visible, .subject:focus-visible {
     outline: 3px solid var(--accent); outline-offset: 2px; border-radius: 6px;
   }
+  .subject:focus { outline: none; }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
 
-  /* Header: title, status, tools, edition tabs. Stays visible while scrolling. */
+  /* Header: title, status, tools, edition tabs. Stays visible while scrolling (not on phones). */
   header.top {
     position: sticky; top: 0; z-index: 2; border-bottom: 1px solid var(--line);
     background: color-mix(in srgb, var(--bg) 94%, transparent); backdrop-filter: blur(8px);
@@ -48,26 +56,31 @@
                flex-wrap: wrap; padding-top: 14px; }
   h1 { font-size: 1.35rem; margin: 0; letter-spacing: -0.01em; }
   .status { color: var(--muted); font-size: 0.8rem; margin: 0; }
+  .late {
+    color: var(--warn-text); background: var(--warn-bg); border-radius: var(--radius);
+    font-size: 0.8rem; padding: 6px 12px; margin: 8px 0 0;
+  }
   .tools { display: flex; gap: 8px; align-items: center; margin: 10px 0 8px; }
   .tools input {
     flex: 1; min-width: 0; font: inherit; font-size: 0.85rem; color: var(--text);
-    background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px;
+    background: var(--surface); border: 1px solid var(--control); border-radius: 999px;
+    padding: 7px 14px;
   }
   .tools button {
     font: inherit; font-size: 0.8rem; color: var(--text); background: var(--surface);
-    border: 1px solid var(--line); border-radius: 999px; padding: 6px 11px; cursor: pointer;
-    white-space: nowrap;
+    border: 1px solid var(--control); border-radius: 999px; padding: 7px 12px; cursor: pointer;
+    white-space: nowrap; min-height: 2.2rem;
   }
-  .tools button:hover { border-color: var(--muted); }
+  .tools button:hover { border-color: var(--text); }
   .tabs { display: flex; gap: 4px; overflow-x: auto; padding-bottom: 8px; scrollbar-width: none; }
   .tab {
-    position: relative; padding: 6px 14px; border-radius: 999px; color: var(--muted);
+    position: relative; padding: 7px 14px; border-radius: 999px; color: var(--muted);
     text-decoration: none; white-space: nowrap; font-size: 0.9rem;
   }
   .tab:hover { color: var(--text); }
   .tab[aria-current="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-  .tab-time { font-size: 0.75rem; opacity: 0.75; font-weight: 400; }
-  .tab-pending, .tab-skipped { opacity: 0.6; }
+  .tab-time { font-size: 0.75rem; font-weight: 400; }
+  .tab-pending, .tab-skipped, .tab-legacy { font-style: italic; }
   .tab.fresh::after {
     content: ""; position: absolute; top: 6px; right: 6px; width: 7px; height: 7px;
     border-radius: 50%; background: var(--dot);
@@ -77,25 +90,33 @@
     background: var(--warn-bg); color: var(--warn-text); border-radius: var(--radius);
     padding: 10px 14px; margin: 0 0 10px; font-size: 0.85rem;
   }
-  .banner-time { opacity: 0.8; }
 
-  /* Editions and subjects */
+  /* Editions, warnings and subjects */
   main { padding-bottom: 48px; }
-  .edition { scroll-margin-top: 170px; }
-  .edition[hidden], .story[hidden], .subject[hidden], .no-match[hidden] { display: none; }
+  .edition[hidden], .story[hidden], .subject[hidden], .no-match[hidden], .late[hidden] { display: none; }
   .ed-head { margin: 22px 0 6px; }
   h2 { font-size: 1.15rem; margin: 0; }
   .ed-sub { color: var(--muted); font-size: 0.85rem; margin: 2px 0 0; }
   .note { color: var(--warn-text); font-size: 0.8rem; margin: 6px 0 0; }
+  .alert {
+    background: var(--warn-bg); color: var(--warn-text); border-left: 4px solid var(--warn-edge);
+    border-radius: var(--radius); padding: 4px 18px 8px; margin: 14px 0;
+  }
+  .alert h3 { color: var(--warn-text); }
+  .alert ul { list-style: none; margin: 0; padding: 0; }
+  .alert li { padding: 6px 0; }
+  .alert .story-link { color: var(--warn-text); }
+  .alert .meta { color: var(--warn-text); }
+  .alert-quiet { color: var(--muted); font-size: 0.8rem; margin: 10px 0 0; }
   .jump { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 4px; }
   .jump a {
     font-size: 0.78rem; text-decoration: none; color: var(--text); background: var(--surface);
-    border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px;
+    border: 1px solid var(--line); border-radius: 999px; padding: 4px 11px;
   }
   .jump a:hover { border-color: var(--accent); color: var(--accent); }
   .subject {
     background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
-    padding: 4px 18px 6px; margin: 14px 0; scroll-margin-top: 170px;
+    padding: 4px 18px 6px; margin: 14px 0;
   }
   h3 {
     font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted);
@@ -120,22 +141,24 @@
     background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
     padding: 14px 18px; margin-top: 22px;
   }
+  /* While searching, every edition with a match is shown; hide the per-edition extras. */
+  .searching .jump, .searching .quiet, .searching .alert, .searching .alert-quiet,
+  .searching .note, .searching .empty { display: none; }
 
   footer { color: var(--muted); font-size: 0.75rem; padding: 18px 16px 32px; border-top: 1px solid var(--line); }
   footer code { word-break: break-all; }
 
   @media (max-width: 520px) {
     header.top { position: static; }          /* a sticky header would cover a third of a phone */
-    .edition, .subject { scroll-margin-top: 8px; }
-    .tab { padding: 6px 12px; }
+    .tab { padding: 8px 12px; }
     .tab-time { display: none; }
     .subject { padding: 2px 14px 4px; }
-    .tools button { padding: 6px 9px; }
+    .tools button { padding: 7px 10px; }
   }
   @media print {
     header.top { position: static; backdrop-filter: none; }
-    .tools, .tabs, .jump { display: none; }
-    .edition[hidden] { display: block; }
+    .tools, .tabs, .jump, .late, .no-match { display: none; }
+    .edition[hidden], .subject[hidden], .story[hidden] { display: block; }
   }
 </style>
 </head>
@@ -144,10 +167,11 @@
   <div class="wrap">
     <div class="title-row">
       <h1>News Digest</h1>
-      <p class="status">{{STATUS}}</p>
+      <p class="status" id="status" {{STATUS_DATA}}>{{STATUS}}</p>
     </div>
+    <p class="late" id="late" role="status" hidden></p>
     <div class="tools">
-      <input id="filter" type="search" placeholder="Filter headlines" aria-label="Filter headlines">
+      <input id="filter" type="search" placeholder="Search all editions" aria-label="Search all editions">
       <button id="smaller" type="button" aria-label="Smaller text">A&minus;</button>
       <button id="larger" type="button" aria-label="Larger text">A+</button>
       <button id="theme" type="button">Auto</button>
@@ -158,33 +182,36 @@
 </header>
 <main class="wrap">
 {{BODY}}
+<p class="no-match" id="no-match" hidden>No headlines match your search.</p>
 </main>
 <footer class="wrap">
   Editable copy with your notes: <code>{{MD_PATH}}</code><br>
-  Page built {{BUILT}}. It refreshes itself when you come back to it after a while.
+  Page built {{BUILT}}. It refreshes itself when a new edition is due.
 </footer>
 <script nonce="{{NONCE}}">
 (function () {
   "use strict";
   var root = document.documentElement;
-
+  function each(list, fn) { Array.prototype.forEach.call(list, fn); }
   function load(key) { try { return localStorage.getItem("newsbot." + key); } catch (e) { return null; } }
   function save(key, value) { try { localStorage.setItem("newsbot." + key, value); } catch (e) {} }
+  function sload(key) { try { return sessionStorage.getItem("newsbot." + key); } catch (e) { return null; } }
+  function ssave(key, value) { try { sessionStorage.setItem("newsbot." + key, value); } catch (e) {} }
 
-  // Text size
+  // ---- Text size
   var sizes = [16, 18, 20, 22, 24];
   var size = parseInt(load("size"), 10);
   if (sizes.indexOf(size) < 0) size = 18;
   function applySize() { root.style.setProperty("--size", size + "px"); }
   function step(delta) {
-    var i = Math.min(sizes.length - 1, Math.max(0, sizes.indexOf(size) + delta));
-    size = sizes[i]; applySize(); save("size", String(size));
+    size = sizes[Math.min(sizes.length - 1, Math.max(0, sizes.indexOf(size) + delta))];
+    applySize(); save("size", String(size));
   }
   applySize();
   document.getElementById("smaller").addEventListener("click", function () { step(-1); });
   document.getElementById("larger").addEventListener("click", function () { step(1); });
 
-  // Theme: Auto (follows Windows) -> Dark -> Light
+  // ---- Theme: Auto (follows Windows) -> Dark -> Light
   var themes = ["auto", "dark", "light"];
   var themeBtn = document.getElementById("theme");
   var theme = load("theme");
@@ -199,88 +226,217 @@
     theme = themes[(themes.indexOf(theme) + 1) % themes.length]; applyTheme(); save("theme", theme);
   });
 
-  // "2 h ago" times; the exact time stays in the tooltip
-  function ago(iso) {
-    var mins = Math.round((Date.now() - Date.parse(iso)) / 60000);
-    if (isNaN(mins) || mins < 0) return null;
+  // ---- Times: "20 min ago", "3 h ago", then "Wed 05:45"; the exact time is in the tooltip.
+  // Shown in the bot's timezone (config.toml), whatever timezone the browser is in.
+  function formatter(opts, locale) {
+    try { return new Intl.DateTimeFormat(locale, Object.assign({ timeZone: root.getAttribute("data-tz") || undefined }, opts)); }
+    catch (e) { return new Intl.DateTimeFormat(locale, opts); }
+  }
+  var fmtClock = formatter({ hour: "2-digit", minute: "2-digit", hourCycle: "h23" }, "en-GB");
+  var fmtDay = formatter({ weekday: "short" }, "en-GB");
+  var fmtDate = formatter({ year: "numeric", month: "2-digit", day: "2-digit" }, "en-CA");
+  var fmtFull = formatter({ dateStyle: "full", timeStyle: "short" }, undefined);
+  function clock(d) { return fmtClock.format(d); }
+  function weekday(d) { return fmtDay.format(d); }
+  function sameDay(a, b) { return fmtDate.format(a) === fmtDate.format(b); }
+  function ago(ms) {
+    if (isNaN(ms)) return null;
+    var mins = Math.round((Date.now() - ms) / 60000), d = new Date(ms);
+    if (mins < -2) return clock(d);            // a feed with a clock in the future
     if (mins < 2) return "just now";
     if (mins < 60) return mins + " min ago";
     if (mins < 24 * 60) return Math.round(mins / 60) + " h ago";
-    return null;
+    return weekday(d) + " " + clock(d);
   }
-  Array.prototype.forEach.call(document.querySelectorAll(".story time"), function (t) {
-    var rel = ago(t.getAttribute("datetime"));
-    if (rel) { t.title = t.textContent; t.textContent = rel; }
-  });
+  var statusEl = document.getElementById("status"), lateEl = document.getElementById("late");
+  function updateStatus() {
+    var updated = Date.parse(statusEl.getAttribute("data-updated") || "");
+    var next = Date.parse(statusEl.getAttribute("data-next") || "");
+    var nextName = statusEl.getAttribute("data-next-name"), parts = [];
+    if (!isNaN(updated)) parts.push("Updated " + ago(updated) + " (" + statusEl.getAttribute("data-updated-name") + ")");
+    if (!isNaN(next)) {
+      var n = new Date(next);
+      parts.push("Next: " + nextName + " " + (sameDay(n, new Date()) ? "at " : weekday(n) + " ") + clock(n));
+    }
+    if (parts.length) statusEl.textContent = parts.join(" · ");
+    var late = !isNaN(next) && Date.now() > next + 20 * 60000;
+    lateEl.hidden = !late;
+    if (late) lateEl.textContent = "The " + nextName + " edition (" + clock(new Date(next)) +
+      ") hasn't arrived yet. Right after the laptop wakes it comes within 15 minutes; " +
+      "otherwise check data/newsbot.log in the bot's folder.";
+  }
+  function updateTimes() {
+    each(document.querySelectorAll(".meta time"), function (t) {
+      var ms = Date.parse(t.getAttribute("datetime"));
+      if (!t.title && !isNaN(ms)) t.title = fmtFull.format(new Date(ms));
+      var text = ago(ms);
+      if (text) t.textContent = text;
+    });
+    updateStatus();
+  }
+  updateTimes();
 
-  // Edition tabs: show one edition at a time, starting with the newest
+  // ---- Edition tabs: one edition at a time, starting with the newest
   var editions = Array.prototype.slice.call(document.querySelectorAll(".edition"));
   var tabs = Array.prototype.slice.call(document.querySelectorAll(".tab"));
-  var filter = document.getElementById("filter");
-  var lastVisit = Date.parse(load("lastVisit") || "");
+  var filter = document.getElementById("filter"), noMatch = document.getElementById("no-match");
+  var current = null, newest = 0;
+  editions.forEach(function (ed) {
+    var p = Date.parse(ed.getAttribute("data-produced") || "");
+    if (p > newest) newest = p;
+  });
 
+  // Editions you have opened, so a dot can mark the ones you haven't seen yet.
+  var seen = [];
+  try { seen = JSON.parse(load("seen") || "[]"); } catch (e) {}
+  if (!Array.isArray(seen)) seen = [];
+  var firstVisit = seen.length === 0;
+  function markSeen(ed) {
+    var p = ed.getAttribute("data-produced");
+    if (p && seen.indexOf(p) < 0) { seen.push(p); seen = seen.slice(-12); save("seen", JSON.stringify(seen)); }
+  }
+  tabs.forEach(function (tab) {
+    var ed = document.getElementById(tab.getAttribute("data-target"));
+    var p = ed && ed.getAttribute("data-produced");
+    if (p && !firstVisit && seen.indexOf(p) < 0) {
+      tab.classList.add("fresh");
+      tab.insertAdjacentHTML("beforeend", '<span class="sr-only"> (new)</span>');
+    }
+  });
+  if (firstVisit) editions.forEach(markSeen);
+
+  function show(id) {
+    current = id;
+    editions.forEach(function (ed) {
+      ed.hidden = ed.id !== id;
+      if (ed.id === id) markSeen(ed);
+    });
+    tabs.forEach(function (tab) {
+      if (tab.getAttribute("data-target") !== id) { tab.removeAttribute("aria-current"); return; }
+      tab.setAttribute("aria-current", "true");
+      tab.classList.remove("fresh");
+      var sr = tab.querySelector(".sr-only");
+      if (sr) sr.parentNode.removeChild(sr);
+      if (tab.scrollIntoView) tab.scrollIntoView({ block: "nearest", inline: "nearest" });
+    });
+  }
+
+  // ---- Search: looks through every edition and shows each one that has a match
   function applyFilter() {
     var q = filter.value.trim().toLowerCase();
+    each(document.querySelectorAll(".story, .subject"), function (el) { el.hidden = false; });
+    if (!q) { root.classList.remove("searching"); noMatch.hidden = true; if (current) show(current); return; }
+    root.classList.add("searching");
+    var total = 0;
     editions.forEach(function (ed) {
-      if (ed.hidden) return;
-      var anyShown = false;
-      Array.prototype.forEach.call(ed.querySelectorAll(".subject"), function (sub) {
+      var inEdition = 0;
+      each(ed.querySelectorAll(".subject"), function (sub) {
         var shown = 0;
-        Array.prototype.forEach.call(sub.querySelectorAll(".story"), function (st) {
-          st.hidden = q !== "" && st.textContent.toLowerCase().indexOf(q) < 0;
+        each(sub.querySelectorAll(".story"), function (st) {
+          st.hidden = st.textContent.toLowerCase().indexOf(q) < 0;
           if (!st.hidden) shown++;
         });
         sub.hidden = shown === 0;
-        if (shown) anyShown = true;
+        inEdition += shown;
       });
-      var none = ed.querySelector(".no-match");
-      if (none) none.hidden = q === "" || anyShown;
+      ed.hidden = !ed.hasAttribute("data-produced") || inEdition === 0;
+      if (!ed.hidden) total += inEdition;
     });
+    noMatch.hidden = total > 0;
   }
-
-  function show(id, remember) {
-    editions.forEach(function (ed) { ed.hidden = ed.id !== id; });
-    tabs.forEach(function (tab) {
-      if (tab.getAttribute("data-target") === id) {
-        tab.setAttribute("aria-current", "true");
-        if (tab.scrollIntoView) tab.scrollIntoView({ block: "nearest", inline: "nearest" });
-      } else tab.removeAttribute("aria-current");
-    });
-    if (remember && history.replaceState) history.replaceState(null, "", "#" + id);
-    applyFilter();
-  }
+  filter.addEventListener("input", applyFilter);
 
   tabs.forEach(function (tab) {
-    var ed = document.getElementById(tab.getAttribute("data-target"));
-    var produced = ed && Date.parse(ed.getAttribute("data-produced") || "");
-    if (!isNaN(lastVisit) && produced > lastVisit) tab.classList.add("fresh");
     tab.addEventListener("click", function (e) {
       e.preventDefault();
-      tab.classList.remove("fresh");
-      show(tab.getAttribute("data-target"), true);
+      if (filter.value) { filter.value = ""; applyFilter(); }
+      show(tab.getAttribute("data-target"));
       window.scrollTo(0, 0);
     });
   });
 
-  var fromHash = location.hash && document.getElementById(location.hash.slice(1));
-  var start = (fromHash && fromHash.classList.contains("edition") && fromHash) ||
+  // Subject chips scroll within the page without changing the address.
+  each(document.querySelectorAll(".jump a"), function (link) {
+    link.addEventListener("click", function (e) {
+      var target = document.getElementById(link.getAttribute("href").slice(1));
+      if (!target) return;
+      e.preventDefault();
+      target.scrollIntoView({ block: "start" });
+      target.focus({ preventScroll: true });
+    });
+  });
+
+  // Keep jump targets clear of the sticky header, whatever its height.
+  var header = document.querySelector("header.top");
+  function padTop() {
+    root.style.scrollPaddingTop = getComputedStyle(header).position === "sticky"
+      ? (header.offsetHeight + 8) + "px" : "0px";
+  }
+  padTop();
+  if (window.ResizeObserver) new ResizeObserver(padTop).observe(header);
+  window.addEventListener("resize", padTop);
+
+  // ---- Start: a link to a section wins; after a reload with nothing new, stay where you were;
+  // otherwise open the newest edition.
+  function editionOf(el) { return el && (el.classList.contains("edition") ? el : el.closest(".edition")); }
+  function fromHash() {
+    var target = location.hash.length > 1 && document.getElementById(decodeURIComponent(location.hash.slice(1)));
+    return target ? { target: target, edition: editionOf(target) } : null;
+  }
+  var state = null;
+  try { state = JSON.parse(sload("state") || "null"); } catch (e) {}
+  var unchanged = state && state.newest === newest && document.getElementById(state.id);
+  var linked = fromHash();
+  var start = (linked && linked.edition) || (unchanged && document.getElementById(state.id)) ||
               document.querySelector(".edition[data-latest]") || editions[0];
-  if (start) show(start.id, false);
+  if (start) show(start.id);
+  if (linked && linked.target !== start) linked.target.scrollIntoView({ block: "start" });
+  else if (unchanged && !linked) {
+    if (state.filter) { filter.value = state.filter; applyFilter(); }
+    window.scrollTo(0, state.y || 0);
+  }
+  window.addEventListener("hashchange", function () {
+    var l = fromHash();
+    if (!l || !l.edition) return;
+    if (filter.value) { filter.value = ""; applyFilter(); }
+    show(l.edition.id);
+    l.target.scrollIntoView({ block: "start" });
+  });
 
-  filter.addEventListener("input", applyFilter);
   document.addEventListener("keydown", function (e) {
-    if (e.key === "/" && document.activeElement !== filter) { e.preventDefault(); filter.focus(); }
-    if (e.key === "Escape" && document.activeElement === filter) { filter.value = ""; applyFilter(); }
+    var t = e.target, editable = t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
+    if (e.key === "/" && !editable && !e.ctrlKey && !e.altKey && !e.metaKey && !e.isComposing) {
+      e.preventDefault(); filter.focus();
+    }
+    if (e.key === "Escape" && t === filter) { filter.value = ""; applyFilter(); }
   });
 
-  // Remember when you last looked (for the dot on new editions), and refresh the page
-  // when you come back to it after a while so new editions show up.
-  var openedAt = Date.now();
-  document.addEventListener("visibilitychange", function () {
-    if (document.hidden) save("lastVisit", new Date().toISOString());
-    else if (Date.now() - openedAt > 10 * 60 * 1000) location.reload();
+  // ---- Refreshing. The bot rewrites this file; the page picks up new editions by reloading:
+  // when you come back after 10+ minutes away, or (if it stays open on screen) once the next
+  // edition is due and you haven't touched the page for 5 minutes. Your place is kept unless
+  // there is something new to show.
+  function saveState() {
+    ssave("state", JSON.stringify({ id: current, newest: newest, y: window.scrollY, filter: filter.value }));
+  }
+  function reload() { saveState(); location.replace(location.href.split("#")[0]); }
+  var hiddenAt = 0, lastActivity = Date.now();
+  ["scroll", "keydown", "pointerdown", "input"].forEach(function (type) {
+    window.addEventListener(type, function () { lastActivity = Date.now(); }, { passive: true });
   });
-  window.addEventListener("pagehide", function () { save("lastVisit", new Date().toISOString()); });
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) { hiddenAt = Date.now(); saveState(); }
+    else if (hiddenAt && Date.now() - hiddenAt > 10 * 60000) reload();
+  });
+  window.addEventListener("pagehide", saveState);
+  setInterval(function () {
+    updateTimes();
+    var next = Date.parse(statusEl.getAttribute("data-next") || "");
+    if (document.hidden || isNaN(next) || Date.now() < next + 16 * 60000) return;
+    if (Date.now() - lastActivity < 5 * 60000 || document.activeElement === filter) return;
+    if (sload("reloadedFor") === String(next)) return;   // once per edition, even if it's late
+    ssave("reloadedFor", String(next));
+    reload();
+  }, 60000);
 })();
 </script>
 </body>

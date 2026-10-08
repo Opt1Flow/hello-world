@@ -6,6 +6,9 @@ timezone = "America/Edmonton"   # Calgary (MST/MDT)
 # in Obsidian, point this at your vault, e.g. 'C:\Users\you\Documents\Vault\News.md'
 # (single quotes so the backslashes are kept as-is).
 output = "news.md"
+# The reading page (open it with `newsbot.py open`). By default it sits next to `output`
+# with the same name and .html; set this to put it somewhere else.
+# html_output = "news.html"
 
 max_items_per_subject = 10
 fail_threshold = 0.5   # if this share of feeds fails, keep the previous edition and retry
@@ -26,9 +29,6 @@ Evening = "19:00"
     # Alberta government newsroom: the old RSS address now returns a web page.
     # If you find its current feed link on alberta.ca, add it here.
 ]
-"Weather alerts" = [
-    "https://weather.gc.ca/rss/battleboard/ab12_e.xml",   # Environment Canada: City of Calgary
-]
 "Canada" = [
     "https://www.cbc.ca/webfeed/rss/rss-canada",
 ]
@@ -42,3 +42,24 @@ Evening = "19:00"
     "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml",
     "https://feeds.bbci.co.uk/news/technology/rss.xml",
 ]
+
+# Warnings are shown at the top of every edition for as long as they are in effect
+# (not as news stories). name = [feeds]
+[alerts]
+"Weather" = [
+    "https://weather.gc.ca/rss/battleboard/ab12_e.xml",   # Environment Canada: City of Calgary
+]
+
+# Short names shown next to each headline (otherwise the feed's own, often long, title).
+[sources]
+"https://www.cbc.ca/webfeed/rss/rss-canada-calgary" = "CBC Calgary"
+"https://globalnews.ca/calgary/feed/" = "Global News"
+"https://calgaryherald.com/feed" = "Calgary Herald"
+"https://weather.gc.ca/rss/battleboard/ab12_e.xml" = "Environment Canada"
+"https://www.cbc.ca/webfeed/rss/rss-canada" = "CBC"
+"https://feeds.bbci.co.uk/news/world/rss.xml" = "BBC"
+"https://www.theguardian.com/world/rss" = "The Guardian"
+"https://rss.dw.com/rdf/rss-en-world" = "DW"
+"https://www.aljazeera.com/xml/rss/all.xml" = "Al Jazeera"
+"https://feeds.bbci.co.uk/news/science_and_environment/rss.xml" = "BBC"
+"https://feeds.bbci.co.uk/news/technology/rss.xml" = "BBC"

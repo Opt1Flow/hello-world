@@ -24,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, time as dtime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from zoneinfo import ZoneInfo
 
 import feedparser
@@ -52,6 +52,11 @@ def load_config(path=APP_DIR / "config.toml"):
     return cfg
 
 
+def source_name(cfg, url, feed_title=""):
+    """Short name from [sources] in config.toml, else the feed's own title, else its host."""
+    return cfg.get("sources", {}).get(url) or feed_title or urlparse(url).hostname or url
+
+
 # ---------------------------------------------------------------- scheduling
 
 def recent_slots(now, cfg):
@@ -71,7 +76,8 @@ def next_slot(now, cfg):
     """The next (slot_datetime, edition) after `now`."""
     tz, local = cfg["tz"], now.astimezone(cfg["tz"])
     for day in (local.date(), local.date() + timedelta(days=1)):
-        for name, hhmm in sorted(cfg["editions"].items(), key=lambda kv: kv[1]):
+        for name, hhmm in sorted(cfg["editions"].items(),
+                                 key=lambda kv: tuple(map(int, kv[1].split(":")))):
             h, m = map(int, hhmm.split(":"))
             slot = datetime.combine(day, dtime(h, m), tzinfo=tz)
             if slot > local:
@@ -137,9 +143,24 @@ def clear_problem(db):
     db.commit()
 
 
+def get_problem(db):
+    row = db.execute("SELECT value FROM meta WHERE key='problem'").fetchone()
+    return json.loads(row[0]) if row else None
+
+
 # ---------------------------------------------------------------- fetching
 
 CLICKBAIT = re.compile(r"^(?:breaking news|breaking|just in|watch|shocking)\s*(?::|\s[-–—|])\s*", re.I)
+
+
+def clean_link(link):
+    """A safe, absolute http(s) link, or None.
+
+    Percent-encoding spaces, brackets and angle brackets means a feed can't end a Markdown
+    link early or smuggle an edition marker like <!-- Morning end --> into news.md.
+    """
+    link = quote((link or "").strip(), safe=":/?#[]@!$&'*+,;=%~")
+    return link if ui.safe_url(link) else None
 
 
 def clean_title(title):
@@ -175,7 +196,9 @@ def make_fetcher():
                 raise
             log.info("Retrying %s as a browser (%s)", url, type(exc).__name__)
             resp = get(url, BROWSER_UA)
-        feed = feedparser.parse(io.BytesIO(resp.content), response_headers=dict(resp.headers))
+        # content-location (lowercase) lets feedparser turn relative links into absolute ones
+        headers = {**{k.lower(): v for k, v in resp.headers.items()}, "content-location": resp.url}
+        feed = feedparser.parse(io.BytesIO(resp.content), response_headers=headers)
         if feed.bozo and not feed.entries:
             raise ValueError(f"not a feed: {feed.get('bozo_exception')}")
         return feed
@@ -206,18 +229,54 @@ def collect(cfg, db, fetch, now):
             log.warning("Feed failed: %s (%s)", url, error)
             failed.append(url)
             continue
-        source = clean_title(feed.feed.get("title", "")) or urlparse(url).hostname
+        source = source_name(cfg, url, clean_title(feed.feed.get("title", "")))
         for e in feed.entries:
-            title, link = clean_title(e.get("title", "")), e.get("link", "")
-            if not title or not ui.safe_url(link):  # only http(s) links, never javascript: etc.
-                continue
-            ts = e.get("published_parsed") or e.get("updated_parsed")  # feedparser gives UTC
-            published = datetime(*ts[:6], tzinfo=timezone.utc).isoformat() if ts else None
-            db.execute("INSERT OR IGNORE INTO items VALUES (?,?,?,?,?,?)",
-                       (link, title, source, subject, published, now.isoformat()))
+            try:
+                title, link = clean_title(e.get("title", "")), clean_link(e.get("link"))
+                if not title or not link:
+                    continue
+                db.execute("INSERT OR IGNORE INTO items VALUES (?,?,?,?,?,?)",
+                           (link, title, source, subject, entry_time(e), now.isoformat()))
+            except Exception as exc:  # one odd entry must not sink the edition
+                log.warning("Skipped an entry in %s: %s", url, exc)
     db.execute("DELETE FROM items WHERE first_seen < ?", ((now - 3 * WINDOW).isoformat(),))
     db.commit()
     return failed
+
+
+def entry_time(entry):
+    """Publication time as ISO text (feedparser gives UTC), or None if missing or nonsense."""
+    ts = entry.get("published_parsed") or entry.get("updated_parsed")
+    try:
+        return datetime(*ts[:6], tzinfo=timezone.utc).isoformat() if ts else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+# Environment Canada lists "No watches or warnings in effect" or "... WARNING ENDED" too.
+ALL_CLEAR = re.compile(r"^no\b.*\bin effect\b|\bended\b", re.I)
+
+
+def check_alerts(cfg, fetch, now):
+    """Current warnings from the [alerts] feeds. Unlike news, these are shown in every
+    edition for as long as they are in effect, not just when they first appear."""
+    groups = []
+    for name, urls in cfg.get("alerts", {}).items():
+        items, failed = [], False
+        for url in urls:
+            feed, error = _try_fetch(fetch, url)
+            if error:
+                log.warning("Alert feed failed: %s (%s)", url, error)
+                failed = True
+                continue
+            for e in feed.entries:
+                title = clean_title(e.get("title", ""))
+                if title and not ALL_CLEAR.search(title):
+                    items.append({"title": title, "link": clean_link(e.get("link")),
+                                  "source": source_name(cfg, url, clean_title(feed.feed.get("title", ""))),
+                                  "time": entry_time(e)})
+        groups.append({"name": name, "items": items, "failed": failed})
+    return {"checked": now.isoformat(), "groups": groups}
 
 
 def _try_fetch(fetch, url):
@@ -260,16 +319,35 @@ def select_items(cfg, db, since, now):
 
 
 def md_escape(text):
-    return text.replace("[", r"\[").replace("]", r"\]")
+    """Headlines stay plain text in Markdown: no links, autolinks or HTML from feed text."""
+    return text.replace("<", r"\<").replace("[", r"\[").replace("]", r"\]")
 
 
-def render_edition(cfg, edition, now, since, grouped, failed, total_feeds):
+def missing_note(missing):
+    """'CBC Calgary (Calgary & Alberta), BBC (World, Science & Technology)'"""
+    by_name = {}
+    for m in missing:
+        by_name.setdefault(m["name"], []).append(m["subject"])
+    return ", ".join(f"{name} ({', '.join(dict.fromkeys(subjects))})" for name, subjects in by_name.items())
+
+
+def render_edition(cfg, edition, now, since, grouped, missing, alerts):
     local = now.astimezone(cfg["tz"])
     count = sum(len(v) for v in grouped.values())
     lines = [f"## {edition} — {local:%a %d %b %Y, %H:%M}",
              f"_{count} new items since {since.astimezone(cfg['tz']):%a %H:%M}_"]
-    if failed:
-        lines.append(f"_{len(failed)} of {total_feeds} feeds failed: {', '.join(failed)}_")
+    if missing:
+        lines.append(f"_Missing this time: {md_escape(missing_note(missing))}_")
+    for group in alerts["groups"]:
+        name = md_escape(group["name"])
+        if group["items"]:
+            lines.append(f"\n**{name} warnings in effect:**")
+            lines += [f"- {md_escape(a['title'])}" + (f" — [{md_escape(a['source'])}]({a['link']})"
+                                                       if a["link"] else "") for a in group["items"]]
+        elif group["failed"]:
+            lines.append(f"\n**{name}:** could not be checked this time")
+        else:
+            lines.append(f"\n**{name}:** no warnings in effect")
     for subject, items in grouped.items():
         lines.append(f"\n### {subject}")
         lines += [f"- {md_escape(t)} — [{md_escape(src)}]({link})" for t, link, src, _ in items]
@@ -324,10 +402,12 @@ def write_sections(path, sections, editions):
         if start not in text and end not in text:
             text += f"\n{start}\n## {name}\n_(pending)_\n{end}\n"
     check_markers(text, editions)
-    for name, body in sections.items():
-        start, end = markers(name)
-        i, j = text.index(start) + len(start), text.index(end)
+    spans = sorted(((text.index(markers(name)[0]) + len(markers(name)[0]),
+                     text.index(markers(name)[1]), body) for name, body in sections.items()),
+                   reverse=True)
+    for i, j, body in spans:  # last block first, so earlier positions stay valid
         text = text[:i] + "\n" + body + "\n" + text[j:]
+    check_markers(text, editions)  # never write a file whose structure we just broke
     atomic_write(path, text)
 
 
@@ -350,15 +430,20 @@ def write_html(cfg, db, now):
     """Rebuild news.html from the stored editions. A failure here never blocks an edition."""
     try:
         stored = {row[0]: row for row in db.execute("SELECT * FROM editions")}
+        slots = {name: slot for slot, name in recent_slots(now, cfg)}
         editions = []
         for name, hhmm in cfg["editions"].items():
             _, kind, slot, produced_at, since, data = stored.get(name) or (name, "pending", None, None, None, "{}")
+            if name not in stored and name in slots and run_status(db, slots[name], name) == "ok":
+                kind = "legacy"  # made before the reading page existed; it's in news.md
+                produced_at = db.execute("SELECT at FROM runs WHERE slot=? AND edition=?",
+                                         (slot_key(slots[name]), name)).fetchone()[0]
             editions.append({"name": name, "time": hhmm, "kind": kind,
                              "slot": ui.parse_time(slot), "produced_at": ui.parse_time(produced_at),
                              "since": ui.parse_time(since), **json.loads(data)})
-        row = db.execute("SELECT value FROM meta WHERE key='problem'").fetchone()
-        page = ui.render_page(editions, cfg["tz"], now, next_slot(now, cfg),
-                              json.loads(row[0]) if row else None, str(cfg["output"]))
+        first_run = db.execute("SELECT count(*) FROM runs").fetchone()[0] == 0
+        page = ui.render_page(editions, cfg["tz"], now, next_slot(now, cfg), get_problem(db),
+                              str(cfg["output"]), first_run)
         atomic_write(cfg["html_output"], page)
     except Exception:
         log.exception("Could not write the reading page %s", cfg["html_output"])
@@ -366,26 +451,30 @@ def write_html(cfg, db, now):
 
 # ---------------------------------------------------------------- runs
 
-def produce(cfg, db, edition, slot, now, fetch, stubs=()):
+def produce(cfg, db, edition, slot, now, fetch, stubs=(), scheduled=True):
     """Fetch, compose and write one edition. Returns True if the file was updated."""
     total = sum(len(urls) for urls in cfg["subjects"].values())
     failed = collect(cfg, db, fetch, now)
     if total and len(failed) / total >= cfg.get("fail_threshold", 0.5):
-        log.error("%s: %d of %d feeds failed; keeping the previous edition, will retry",
-                  edition, len(failed), total)
-        set_problem(db, now, f"{len(failed)} of {total} news sources could not be reached "
-                             f"(offline?). Showing the previous edition; the bot retries "
-                             f"every 15 minutes.")
-        write_html(cfg, db, now)
+        log.error("%s: %d of %d feeds failed; keeping the previous edition%s", edition,
+                  len(failed), total, ", will retry" if scheduled else "")
+        if scheduled:  # a manual run's failure is reported on the console instead
+            set_problem(db, now, f"{len(failed)} of {total} news sources could not be reached "
+                                 f"(offline?). Showing the previous edition; the bot retries "
+                                 f"every 15 minutes.")
+            write_html(cfg, db, now)
         return False
     since = max(filter(None, [last_ok_run(db), now - WINDOW]))
     grouped = select_items(cfg, db, since, now)
-    sections = {edition: render_edition(cfg, edition, now, since, grouped, failed, total)}
+    alerts = check_alerts(cfg, fetch, now)
+    subject_of = {url: subject for subject, urls in cfg["subjects"].items() for url in urls}
+    missing = [{"name": source_name(cfg, url), "subject": subject_of[url]} for url in failed]
+    sections = {edition: render_edition(cfg, edition, now, since, grouped, missing, alerts)}
     store_edition(db, edition, "ok", slot, now, since, {
         "subjects": {subject: [{"title": t, "link": link, "source": src, "time": when}
                                for t, link, src, when in items]
                      for subject, items in grouped.items()},
-        "failed": failed, "total_feeds": total})
+        "missing": missing, "total_feeds": total, "alerts": alerts})
     for s, name in stubs:
         note = (f"Not produced on {s:%a %d %b} at {s:%H:%M}: the computer was off or asleep. "
                 f"Those stories are in the {edition} edition.")
@@ -418,6 +507,8 @@ def run_due(cfg, db, now, fetch=None):
         return False
     slot, edition = slots[-1]
     if run_status(db, slot, edition):
+        if not cfg["html_output"].exists():  # e.g. just after upgrading to the reading page
+            write_html(cfg, db, now)
         return False  # already done: the common case, finishes in milliseconds
     if fetch is None:
         first_url = next(u for urls in cfg["subjects"].values() for u in urls)
@@ -436,7 +527,7 @@ def run_now(cfg, db, edition, now, fetch=None):
     if edition not in cfg["editions"]:
         sys.exit(f"Unknown edition {edition!r}; choose from {', '.join(cfg['editions'])}")
     slot = max((s for s, e in recent_slots(now, cfg) if e == edition), default=now)
-    return produce(cfg, db, edition, slot, now, fetch or make_fetcher())
+    return produce(cfg, db, edition, slot, now, fetch or make_fetcher(), scheduled=False)
 
 
 class AlreadyRunning(Exception):
@@ -483,6 +574,20 @@ def setup_logging():
     logging.getLogger("urllib3").setLevel(logging.ERROR)  # per-retry noise; failures are logged below
 
 
+def open_page(cfg, now):
+    """Rebuild the reading page if no run is busy, then open it in the default browser."""
+    try:
+        with RunLock(DATA_DIR / "newsbot.lock"):
+            write_html(cfg, open_db(), now)
+    except AlreadyRunning:
+        print("A news run is in progress; opening the page as it is.")
+    if not cfg["html_output"].exists():
+        print("No reading page yet; try again in a minute.")
+        return 1
+    webbrowser.open(cfg["html_output"].as_uri())
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -496,16 +601,15 @@ def main(argv=None):
     cfg = load_config()
     error_file = cfg["output"].with_name(cfg["output"].name + ".ERROR.txt")
     now = datetime.now(timezone.utc)
+    if args.cmd == "open":
+        return open_page(cfg, now)
+    db = None
     try:
         with RunLock(DATA_DIR / "newsbot.lock"):
             db = open_db()
             if args.cmd == "status":
                 for row in db.execute("SELECT * FROM runs ORDER BY at DESC LIMIT 9"):
                     print(*row, sep="  |  ")
-                return 0
-            if args.cmd == "open":
-                write_html(cfg, db, now)
-                webbrowser.open(cfg["html_output"].as_uri())
                 return 0
             if args.cmd == "run":
                 updated = run_now(cfg, db, args.edition, now)
@@ -518,10 +622,16 @@ def main(argv=None):
         return 0
     except Exception as exc:
         log.exception("Run failed")
-        # Somewhere you'll see it: right next to the news file.
+        # Somewhere you'll see it: right next to the news file, and on the reading page.
         error_file.write_text(f"{datetime.now():%Y-%m-%d %H:%M}  The news bot could not update "
                               f"{cfg['output'].name}:\n\n{exc}\n\nDetails: {DATA_DIR / 'newsbot.log'}\n",
                               encoding="utf-8")
+        try:
+            if db is not None and (get_problem(db) or {}).get("at") != now.isoformat():
+                set_problem(db, now, f"The last update failed: {exc}. Details: {DATA_DIR / 'newsbot.log'}")
+                write_html(cfg, db, now)
+        except Exception:
+            log.exception("Could not report the failure on the reading page")
         return 1
     return 0
 
