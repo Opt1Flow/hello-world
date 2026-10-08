@@ -5,3 +5,5 @@ news.md.tmp
 news.md.ERROR.txt
 __pycache__/
 .pytest_cache/
+news.html
+news.html.tmp

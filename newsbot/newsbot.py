@@ -3,12 +3,14 @@
     python newsbot.py run-due        what the scheduler calls: produce the edition that is due, if any
     python newsbot.py run Morning    produce one edition right now (for testing)
     python newsbot.py status         show recent runs and the next edition
+    python newsbot.py open           open the reading page (news.html) in your browser
 
 Each run checks a small SQLite log ("ledger") of which editions were already produced, so a
 laptop that was asleep at 06:00 still gets its Morning edition within 15 minutes of waking.
 """
 import argparse
 import io
+import json
 import logging
 import os
 import re
@@ -17,6 +19,7 @@ import sqlite3
 import sys
 import time
 import tomllib
+import webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, time as dtime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
@@ -28,6 +31,8 @@ import feedparser
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+import ui
 
 APP_DIR = Path(__file__).resolve().parent  # never rely on the current directory
 DATA_DIR = APP_DIR / "data"
@@ -42,6 +47,8 @@ def load_config(path=APP_DIR / "config.toml"):
         cfg = tomllib.load(f)
     cfg["tz"] = ZoneInfo(cfg["timezone"])
     cfg["output"] = (APP_DIR / cfg["output"]).resolve()  # resolve() also follows symlinks
+    html_out = cfg.get("html_output")
+    cfg["html_output"] = (APP_DIR / html_out).resolve() if html_out else cfg["output"].with_suffix(".html")
     return cfg
 
 
@@ -60,6 +67,18 @@ def recent_slots(now, cfg):
     return sorted(slots)
 
 
+def next_slot(now, cfg):
+    """The next (slot_datetime, edition) after `now`."""
+    tz, local = cfg["tz"], now.astimezone(cfg["tz"])
+    for day in (local.date(), local.date() + timedelta(days=1)):
+        for name, hhmm in sorted(cfg["editions"].items(), key=lambda kv: kv[1]):
+            h, m = map(int, hhmm.split(":"))
+            slot = datetime.combine(day, dtime(h, m), tzinfo=tz)
+            if slot > local:
+                return slot, name
+    return None
+
+
 def slot_key(slot):
     return slot.strftime("%Y-%m-%d %H:%M")
 
@@ -75,6 +94,9 @@ def open_db(path=None):
         CREATE TABLE IF NOT EXISTS items (
             link TEXT PRIMARY KEY, title TEXT, source TEXT, subject TEXT,
             published TEXT, first_seen TEXT);
+        CREATE TABLE IF NOT EXISTS editions (
+            edition TEXT PRIMARY KEY, kind TEXT, slot TEXT, produced_at TEXT, since TEXT, data TEXT);
+        CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
     """)
     return db
 
@@ -94,6 +116,25 @@ def record_run(db, slot, edition, status, now):
 def last_ok_run(db):
     row = db.execute("SELECT max(at) FROM runs WHERE status='ok'").fetchone()
     return datetime.fromisoformat(row[0]) if row[0] else None
+
+
+def store_edition(db, edition, kind, slot, now, since=None, data=None):
+    """Keep what each edition showed, so the reading page can be rebuilt at any time."""
+    db.execute("INSERT OR REPLACE INTO editions VALUES (?,?,?,?,?,?)",
+               (edition, kind, slot.isoformat(), now.isoformat(),
+                since.isoformat() if since else None, json.dumps(data or {})))
+    db.commit()
+
+
+def set_problem(db, now, message):
+    db.execute("INSERT OR REPLACE INTO meta VALUES ('problem', ?)",
+               (json.dumps({"at": now.isoformat(), "message": message}),))
+    db.commit()
+
+
+def clear_problem(db):
+    db.execute("DELETE FROM meta WHERE key='problem'")
+    db.commit()
 
 
 # ---------------------------------------------------------------- fetching
@@ -168,7 +209,7 @@ def collect(cfg, db, fetch, now):
         source = clean_title(feed.feed.get("title", "")) or urlparse(url).hostname
         for e in feed.entries:
             title, link = clean_title(e.get("title", "")), e.get("link", "")
-            if not title or not link:
+            if not title or not ui.safe_url(link):  # only http(s) links, never javascript: etc.
                 continue
             ts = e.get("published_parsed") or e.get("updated_parsed")  # feedparser gives UTC
             published = datetime(*ts[:6], tzinfo=timezone.utc).isoformat() if ts else None
@@ -194,7 +235,7 @@ def select_items(cfg, db, since, now):
     Within a subject, sources take turns so one busy feed can't crowd out the others.
     """
     rows = db.execute(
-        "SELECT subject, source, title, link FROM items "
+        "SELECT subject, source, title, link, coalesce(published, first_seen) FROM items "
         "WHERE first_seen > ? AND (published IS NULL OR published >= ?) "
         "ORDER BY coalesce(published, first_seen) DESC",
         (since.isoformat(), (now - WINDOW).isoformat())).fetchall()
@@ -202,10 +243,10 @@ def select_items(cfg, db, since, now):
     grouped, seen_titles = {}, set()
     for subject in cfg["subjects"]:
         by_source = {}
-        for subj, source, title, link in rows:
+        for subj, source, title, link, when in rows:
             if subj == subject and title.lower() not in seen_titles:
                 seen_titles.add(title.lower())  # same headline from two outlets/subjects
-                by_source.setdefault(source, []).append((title, link, source))
+                by_source.setdefault(source, []).append((title, link, source, when))
         queues, picked = list(by_source.values()), []
         while len(picked) < limit and any(queues):
             for q in queues:
@@ -231,7 +272,7 @@ def render_edition(cfg, edition, now, since, grouped, failed, total_feeds):
         lines.append(f"_{len(failed)} of {total_feeds} feeds failed: {', '.join(failed)}_")
     for subject, items in grouped.items():
         lines.append(f"\n### {subject}")
-        lines += [f"- {md_escape(t)} — [{md_escape(src)}]({link})" for t, link, src in items]
+        lines += [f"- {md_escape(t)} — [{md_escape(src)}]({link})" for t, link, src, _ in items]
         if not items:
             lines.append("- _No new items_")
     return "\n".join(lines)
@@ -303,6 +344,26 @@ def atomic_write(path, text):
             time.sleep(2)
 
 
+# ---------------------------------------------------------------- the reading page
+
+def write_html(cfg, db, now):
+    """Rebuild news.html from the stored editions. A failure here never blocks an edition."""
+    try:
+        stored = {row[0]: row for row in db.execute("SELECT * FROM editions")}
+        editions = []
+        for name, hhmm in cfg["editions"].items():
+            _, kind, slot, produced_at, since, data = stored.get(name) or (name, "pending", None, None, None, "{}")
+            editions.append({"name": name, "time": hhmm, "kind": kind,
+                             "slot": ui.parse_time(slot), "produced_at": ui.parse_time(produced_at),
+                             "since": ui.parse_time(since), **json.loads(data)})
+        row = db.execute("SELECT value FROM meta WHERE key='problem'").fetchone()
+        page = ui.render_page(editions, cfg["tz"], now, next_slot(now, cfg),
+                              json.loads(row[0]) if row else None, str(cfg["output"]))
+        atomic_write(cfg["html_output"], page)
+    except Exception:
+        log.exception("Could not write the reading page %s", cfg["html_output"])
+
+
 # ---------------------------------------------------------------- runs
 
 def produce(cfg, db, edition, slot, now, fetch, stubs=()):
@@ -312,17 +373,36 @@ def produce(cfg, db, edition, slot, now, fetch, stubs=()):
     if total and len(failed) / total >= cfg.get("fail_threshold", 0.5):
         log.error("%s: %d of %d feeds failed; keeping the previous edition, will retry",
                   edition, len(failed), total)
+        set_problem(db, now, f"{len(failed)} of {total} news sources could not be reached "
+                             f"(offline?). Showing the previous edition; the bot retries "
+                             f"every 15 minutes.")
+        write_html(cfg, db, now)
         return False
     since = max(filter(None, [last_ok_run(db), now - WINDOW]))
     grouped = select_items(cfg, db, since, now)
     sections = {edition: render_edition(cfg, edition, now, since, grouped, failed, total)}
+    store_edition(db, edition, "ok", slot, now, since, {
+        "subjects": {subject: [{"title": t, "link": link, "source": src, "time": when}
+                               for t, link, src, when in items]
+                     for subject, items in grouped.items()},
+        "failed": failed, "total_feeds": total})
     for s, name in stubs:
-        sections[name] = (f"## {name}\n_Not produced on {s:%a %d %b} at {s:%H:%M}: the computer "
-                          f"was off or asleep. Those stories are in the {edition} edition._")
-    write_sections(cfg["output"], sections, list(cfg["editions"]))
+        note = (f"Not produced on {s:%a %d %b} at {s:%H:%M}: the computer was off or asleep. "
+                f"Those stories are in the {edition} edition.")
+        sections[name] = f"## {name}\n_{note}_"
+        store_edition(db, name, "skipped", s, now, data={"note": note})
+    try:
+        write_sections(cfg["output"], sections, list(cfg["editions"]))
+    except Exception as exc:
+        # The reading page still gets the new edition, with a note about the notes file.
+        set_problem(db, now, f"Could not update {cfg['output'].name}: {exc}")
+        write_html(cfg, db, now)
+        raise
     record_run(db, slot, edition, "ok", now)
     for s, name in stubs:
         record_run(db, s, name, "skipped", now)
+    clear_problem(db)
+    write_html(cfg, db, now)
     log.info("%s edition written to %s", edition, cfg["output"])
     return True
 
@@ -343,6 +423,9 @@ def run_due(cfg, db, now, fetch=None):
         first_url = next(u for urls in cfg["subjects"].values() for u in urls)
         if not wait_for_network(urlparse(first_url).hostname):
             log.warning("No network; will retry at the next check-in")
+            set_problem(db, now, f"No internet connection at {edition} time. Showing the "
+                                 f"previous edition; the bot retries every 15 minutes.")
+            write_html(cfg, db, now)
             return False
         fetch = make_fetcher()
     missed = [(s, e) for s, e in slots[:-1] if run_status(db, s, e) is None]
@@ -405,6 +488,7 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("run-due")
     sub.add_parser("status")
+    sub.add_parser("open")
     sub.add_parser("run").add_argument("edition")
     args = parser.parse_args(argv)
 
@@ -418,6 +502,10 @@ def main(argv=None):
             if args.cmd == "status":
                 for row in db.execute("SELECT * FROM runs ORDER BY at DESC LIMIT 9"):
                     print(*row, sep="  |  ")
+                return 0
+            if args.cmd == "open":
+                write_html(cfg, db, now)
+                webbrowser.open(cfg["html_output"].as_uri())
                 return 0
             if args.cmd == "run":
                 updated = run_now(cfg, db, args.edition, now)

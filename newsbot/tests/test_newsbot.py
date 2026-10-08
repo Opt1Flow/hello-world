@@ -20,7 +20,8 @@ def at(text):
 @pytest.fixture
 def cfg(tmp_path):
     return {
-        "tz": TZ, "output": tmp_path / "news.md", "max_items_per_subject": 10,
+        "tz": TZ, "output": tmp_path / "news.md", "html_output": tmp_path / "news.html",
+        "max_items_per_subject": 10,
         "fail_threshold": 0.5,
         "editions": {"Morning": "06:00", "Afternoon": "13:00", "Evening": "19:00"},
         "subjects": {"Local": ["https://a.test/rss", "https://b.test/rss"],

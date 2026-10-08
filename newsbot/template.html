@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-{{NONCE}}'; img-src data:">
+<meta name="color-scheme" content="light dark">
+<title>News Digest</title>
+<style>
+  /* Colours live here as tokens, so light and dark mode only swap values. */
+  :root {
+    --bg: #f6f5f1; --surface: #ffffff; --text: #1c1c1e; --muted: #5d6167; --line: #e2dfd8;
+    --accent: #1d5bb8; --accent-soft: #e6eefb; --visited: #6e7076;
+    --warn-bg: #fff3dc; --warn-text: #6e4300; --dot: #d0410f;
+    --size: 18px; --radius: 12px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #131416; --surface: #1c1d21; --text: #ebebec; --muted: #a2a6ad; --line: #2d2f35;
+      --accent: #8db6f7; --accent-soft: #1d2a40; --visited: #8d9097;
+      --warn-bg: #3a2b12; --warn-text: #f5c56f; --dot: #ff8d5c;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #131416; --surface: #1c1d21; --text: #ebebec; --muted: #a2a6ad; --line: #2d2f35;
+    --accent: #8db6f7; --accent-soft: #1d2a40; --visited: #8d9097;
+    --warn-bg: #3a2b12; --warn-text: #f5c56f; --dot: #ff8d5c;
+  }
+
+  html { font-size: var(--size); -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text); line-height: 1.5;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  .wrap { max-width: 44rem; margin: 0 auto; padding: 0 16px; }
+  a { color: var(--accent); }
+  a:focus-visible, button:focus-visible, input:focus-visible {
+    outline: 3px solid var(--accent); outline-offset: 2px; border-radius: 6px;
+  }
+
+  /* Header: title, status, tools, edition tabs. Stays visible while scrolling. */
+  header.top {
+    position: sticky; top: 0; z-index: 2; border-bottom: 1px solid var(--line);
+    background: color-mix(in srgb, var(--bg) 94%, transparent); backdrop-filter: blur(8px);
+  }
+  .title-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+               flex-wrap: wrap; padding-top: 14px; }
+  h1 { font-size: 1.35rem; margin: 0; letter-spacing: -0.01em; }
+  .status { color: var(--muted); font-size: 0.8rem; margin: 0; }
+  .tools { display: flex; gap: 8px; align-items: center; margin: 10px 0 8px; }
+  .tools input {
+    flex: 1; min-width: 0; font: inherit; font-size: 0.85rem; color: var(--text);
+    background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px;
+  }
+  .tools button {
+    font: inherit; font-size: 0.8rem; color: var(--text); background: var(--surface);
+    border: 1px solid var(--line); border-radius: 999px; padding: 6px 11px; cursor: pointer;
+    white-space: nowrap;
+  }
+  .tools button:hover { border-color: var(--muted); }
+  .tabs { display: flex; gap: 4px; overflow-x: auto; padding-bottom: 8px; scrollbar-width: none; }
+  .tab {
+    position: relative; padding: 6px 14px; border-radius: 999px; color: var(--muted);
+    text-decoration: none; white-space: nowrap; font-size: 0.9rem;
+  }
+  .tab:hover { color: var(--text); }
+  .tab[aria-current="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .tab-time { font-size: 0.75rem; opacity: 0.75; font-weight: 400; }
+  .tab-pending, .tab-skipped { opacity: 0.6; }
+  .tab.fresh::after {
+    content: ""; position: absolute; top: 6px; right: 6px; width: 7px; height: 7px;
+    border-radius: 50%; background: var(--dot);
+  }
+
+  .banner {
+    background: var(--warn-bg); color: var(--warn-text); border-radius: var(--radius);
+    padding: 10px 14px; margin: 0 0 10px; font-size: 0.85rem;
+  }
+  .banner-time { opacity: 0.8; }
+
+  /* Editions and subjects */
+  main { padding-bottom: 48px; }
+  .edition { scroll-margin-top: 170px; }
+  .edition[hidden], .story[hidden], .subject[hidden], .no-match[hidden] { display: none; }
+  .ed-head { margin: 22px 0 6px; }
+  h2 { font-size: 1.15rem; margin: 0; }
+  .ed-sub { color: var(--muted); font-size: 0.85rem; margin: 2px 0 0; }
+  .note { color: var(--warn-text); font-size: 0.8rem; margin: 6px 0 0; }
+  .jump { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 4px; }
+  .jump a {
+    font-size: 0.78rem; text-decoration: none; color: var(--text); background: var(--surface);
+    border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px;
+  }
+  .jump a:hover { border-color: var(--accent); color: var(--accent); }
+  .subject {
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 4px 18px 6px; margin: 14px 0; scroll-margin-top: 170px;
+  }
+  h3 {
+    font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted);
+    margin: 12px 0 4px; display: flex; align-items: center; gap: 8px;
+  }
+  .count {
+    font-size: 0.7rem; font-weight: 600; color: var(--muted); background: var(--bg);
+    border-radius: 999px; padding: 0 7px; letter-spacing: 0;
+  }
+  ol.stories { list-style: none; margin: 0; padding: 0; }
+  .story { padding: 11px 0; border-top: 1px solid var(--line); }
+  .story:first-child { border-top: 0; }
+  .story-link {
+    color: var(--text); text-decoration: none; font-weight: 600; font-size: 1rem;
+    line-height: 1.38; text-wrap: pretty;
+  }
+  a.story-link:hover { color: var(--accent); text-decoration: underline; }
+  a.story-link:visited { color: var(--visited); font-weight: 500; }   /* already read */
+  .meta { color: var(--muted); font-size: 0.78rem; margin-top: 3px; }
+  .empty, .quiet, .no-match, .welcome { color: var(--muted); font-size: 0.9rem; }
+  .welcome {
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 14px 18px; margin-top: 22px;
+  }
+
+  footer { color: var(--muted); font-size: 0.75rem; padding: 18px 16px 32px; border-top: 1px solid var(--line); }
+  footer code { word-break: break-all; }
+
+  @media (max-width: 520px) {
+    header.top { position: static; }          /* a sticky header would cover a third of a phone */
+    .edition, .subject { scroll-margin-top: 8px; }
+    .tab { padding: 6px 12px; }
+    .tab-time { display: none; }
+    .subject { padding: 2px 14px 4px; }
+    .tools button { padding: 6px 9px; }
+  }
+  @media print {
+    header.top { position: static; backdrop-filter: none; }
+    .tools, .tabs, .jump { display: none; }
+    .edition[hidden] { display: block; }
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <div class="title-row">
+      <h1>News Digest</h1>
+      <p class="status">{{STATUS}}</p>
+    </div>
+    <div class="tools">
+      <input id="filter" type="search" placeholder="Filter headlines" aria-label="Filter headlines">
+      <button id="smaller" type="button" aria-label="Smaller text">A&minus;</button>
+      <button id="larger" type="button" aria-label="Larger text">A+</button>
+      <button id="theme" type="button">Auto</button>
+    </div>
+    {{BANNER}}
+    <nav class="tabs" aria-label="Editions">{{TABS}}</nav>
+  </div>
+</header>
+<main class="wrap">
+{{BODY}}
+</main>
+<footer class="wrap">
+  Editable copy with your notes: <code>{{MD_PATH}}</code><br>
+  Page built {{BUILT}}. It refreshes itself when you come back to it after a while.
+</footer>
+<script nonce="{{NONCE}}">
+(function () {
+  "use strict";
+  var root = document.documentElement;
+
+  function load(key) { try { return localStorage.getItem("newsbot." + key); } catch (e) { return null; } }
+  function save(key, value) { try { localStorage.setItem("newsbot." + key, value); } catch (e) {} }
+
+  // Text size
+  var sizes = [16, 18, 20, 22, 24];
+  var size = parseInt(load("size"), 10);
+  if (sizes.indexOf(size) < 0) size = 18;
+  function applySize() { root.style.setProperty("--size", size + "px"); }
+  function step(delta) {
+    var i = Math.min(sizes.length - 1, Math.max(0, sizes.indexOf(size) + delta));
+    size = sizes[i]; applySize(); save("size", String(size));
+  }
+  applySize();
+  document.getElementById("smaller").addEventListener("click", function () { step(-1); });
+  document.getElementById("larger").addEventListener("click", function () { step(1); });
+
+  // Theme: Auto (follows Windows) -> Dark -> Light
+  var themes = ["auto", "dark", "light"];
+  var themeBtn = document.getElementById("theme");
+  var theme = load("theme");
+  if (themes.indexOf(theme) < 0) theme = "auto";
+  function applyTheme() {
+    if (theme === "auto") root.removeAttribute("data-theme"); else root.setAttribute("data-theme", theme);
+    themeBtn.textContent = theme.charAt(0).toUpperCase() + theme.slice(1);
+    themeBtn.setAttribute("aria-label", "Colour theme: " + theme + ". Click to change.");
+  }
+  applyTheme();
+  themeBtn.addEventListener("click", function () {
+    theme = themes[(themes.indexOf(theme) + 1) % themes.length]; applyTheme(); save("theme", theme);
+  });
+
+  // "2 h ago" times; the exact time stays in the tooltip
+  function ago(iso) {
+    var mins = Math.round((Date.now() - Date.parse(iso)) / 60000);
+    if (isNaN(mins) || mins < 0) return null;
+    if (mins < 2) return "just now";
+    if (mins < 60) return mins + " min ago";
+    if (mins < 24 * 60) return Math.round(mins / 60) + " h ago";
+    return null;
+  }
+  Array.prototype.forEach.call(document.querySelectorAll(".story time"), function (t) {
+    var rel = ago(t.getAttribute("datetime"));
+    if (rel) { t.title = t.textContent; t.textContent = rel; }
+  });
+
+  // Edition tabs: show one edition at a time, starting with the newest
+  var editions = Array.prototype.slice.call(document.querySelectorAll(".edition"));
+  var tabs = Array.prototype.slice.call(document.querySelectorAll(".tab"));
+  var filter = document.getElementById("filter");
+  var lastVisit = Date.parse(load("lastVisit") || "");
+
+  function applyFilter() {
+    var q = filter.value.trim().toLowerCase();
+    editions.forEach(function (ed) {
+      if (ed.hidden) return;
+      var anyShown = false;
+      Array.prototype.forEach.call(ed.querySelectorAll(".subject"), function (sub) {
+        var shown = 0;
+        Array.prototype.forEach.call(sub.querySelectorAll(".story"), function (st) {
+          st.hidden = q !== "" && st.textContent.toLowerCase().indexOf(q) < 0;
+          if (!st.hidden) shown++;
+        });
+        sub.hidden = shown === 0;
+        if (shown) anyShown = true;
+      });
+      var none = ed.querySelector(".no-match");
+      if (none) none.hidden = q === "" || anyShown;
+    });
+  }
+
+  function show(id, remember) {
+    editions.forEach(function (ed) { ed.hidden = ed.id !== id; });
+    tabs.forEach(function (tab) {
+      if (tab.getAttribute("data-target") === id) {
+        tab.setAttribute("aria-current", "true");
+        if (tab.scrollIntoView) tab.scrollIntoView({ block: "nearest", inline: "nearest" });
+      } else tab.removeAttribute("aria-current");
+    });
+    if (remember && history.replaceState) history.replaceState(null, "", "#" + id);
+    applyFilter();
+  }
+
+  tabs.forEach(function (tab) {
+    var ed = document.getElementById(tab.getAttribute("data-target"));
+    var produced = ed && Date.parse(ed.getAttribute("data-produced") || "");
+    if (!isNaN(lastVisit) && produced > lastVisit) tab.classList.add("fresh");
+    tab.addEventListener("click", function (e) {
+      e.preventDefault();
+      tab.classList.remove("fresh");
+      show(tab.getAttribute("data-target"), true);
+      window.scrollTo(0, 0);
+    });
+  });
+
+  var fromHash = location.hash && document.getElementById(location.hash.slice(1));
+  var start = (fromHash && fromHash.classList.contains("edition") && fromHash) ||
+              document.querySelector(".edition[data-latest]") || editions[0];
+  if (start) show(start.id, false);
+
+  filter.addEventListener("input", applyFilter);
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "/" && document.activeElement !== filter) { e.preventDefault(); filter.focus(); }
+    if (e.key === "Escape" && document.activeElement === filter) { filter.value = ""; applyFilter(); }
+  });
+
+  // Remember when you last looked (for the dot on new editions), and refresh the page
+  // when you come back to it after a while so new editions show up.
+  var openedAt = Date.now();
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) save("lastVisit", new Date().toISOString());
+    else if (Date.now() - openedAt > 10 * 60 * 1000) location.reload();
+  });
+  window.addEventListener("pagehide", function () { save("lastVisit", new Date().toISOString()); });
+})();
+</script>
+</body>
+</html>
