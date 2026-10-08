@@ -454,9 +454,12 @@ def write_html(cfg, db, now):
                              "since": ui.parse_time(since), **json.loads(data)})
         first_run = db.execute("SELECT count(*) FROM runs").fetchone()[0] == 0
         upcoming, problem = next_slot(now, cfg), get_problem(db)
-        page = ui.render_page(editions, cfg["tz"], now, upcoming, problem, str(cfg["output"]), first_run)
-        atomic_write(cfg["html_output"], page)
-        if cfg.get("json_output"):
+    except Exception:
+        log.exception("Could not read the stored editions")
+        return
+    # Two files, written independently: a locked news.html must not stop the TV's news.json.
+    if cfg.get("json_output"):
+        try:
             atomic_write(cfg["json_output"], json.dumps({
                 "generated": now.isoformat(),
                 "timezone": getattr(cfg["tz"], "key", None),
@@ -464,6 +467,11 @@ def write_html(cfg, db, now):
                 "problem": problem,
                 "editions": editions,
             }, default=lambda value: value.isoformat(), ensure_ascii=False))
+        except Exception:
+            log.exception("Could not write %s", cfg["json_output"])
+    try:
+        page = ui.render_page(editions, cfg["tz"], now, upcoming, problem, cfg["output"].name, first_run)
+        atomic_write(cfg["html_output"], page)
     except Exception:
         log.exception("Could not write the reading page %s", cfg["html_output"])
 
@@ -503,7 +511,9 @@ def produce(cfg, db, edition, slot, now, fetch, stubs=(), scheduled=True):
         write_sections(cfg["output"], sections, list(cfg["editions"]))
     except Exception as exc:
         # The reading page still gets the new edition, with a note about the notes file.
-        set_problem(db, now, f"Could not update {cfg['output'].name}: {exc}")
+        reason = exc if isinstance(exc, MarkerError) else type(exc).__name__
+        set_problem(db, now, f"Could not update {cfg['output'].name}: {reason}. "
+                             f"Details are in newsbot.log on the laptop.")
         write_html(cfg, db, now)
         raise
     record_run(db, slot, edition, "ok", now)
@@ -526,8 +536,8 @@ def run_due(cfg, db, now, fetch=None):
         return False
     slot, edition = slots[-1]
     if run_status(db, slot, edition):
-        if not cfg["html_output"].exists():  # e.g. just after upgrading to the reading page
-            write_html(cfg, db, now)
+        if not cfg["html_output"].exists() or (cfg.get("json_output") and not cfg["json_output"].exists()):
+            write_html(cfg, db, now)  # e.g. just after upgrading: make the pages now, not at 06:00
         return False  # already done: the common case, finishes in milliseconds
     if fetch is None:
         first_url = next(u for urls in cfg["subjects"].values() for u in urls)
@@ -623,10 +633,16 @@ def main(argv=None):
     # The server runs all day next to the scheduled runs, so it keeps its own log file
     # (on Windows one process can't rotate a log another process has open).
     setup_logging("server.log" if args.cmd == "serve" else "newsbot.log")
-    cfg = load_config()
     if args.cmd == "serve":
-        import server
-        return server.serve(cfg, args.port or cfg.get("serve_port", 8765))
+        try:  # under pythonw nobody sees a crash, so it must end up in data/server.log
+            import server
+            cfg = load_config()
+            return server.serve(cfg, args.port or cfg.get("serve_port", 8765),
+                                loader=load_config, config_path=APP_DIR / "config.toml")
+        except Exception:
+            log.exception("The kiosk server stopped")
+            return 1
+    cfg = load_config()
     error_file = cfg["output"].with_name(cfg["output"].name + ".ERROR.txt")
     now = datetime.now(timezone.utc)
     if args.cmd == "open":
@@ -656,7 +672,8 @@ def main(argv=None):
                               encoding="utf-8")
         try:
             if db is not None and (get_problem(db) or {}).get("at") != now.isoformat():
-                set_problem(db, now, f"The last update failed: {exc}. Details: {DATA_DIR / 'newsbot.log'}")
+                set_problem(db, now, f"The last update failed ({type(exc).__name__}). "
+                                     f"Details are in newsbot.log on the laptop.")
                 write_html(cfg, db, now)
         except Exception:
             log.exception("Could not report the failure on the reading page")

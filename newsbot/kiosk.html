@@ -13,6 +13,7 @@
   Options (add to the address, e.g. ?seconds=30&scale=1.2):
       seconds=20   how long each screen stays      scale=1    story text size (0.5 - 3)
       max=12       stories per subject             theme=light  light background
+      tz=America/Edmonton   clock timezone until the first news arrives (for the copy on the Pi)
 -->
 <style>
   :root {
@@ -24,16 +25,21 @@
     --bg: #f6f5f1; --panel: #ffffff; --text: #1c1c1e; --muted: #53575d; --line: #e2dfd8;
     --accent: #1d5bb8; --new: #a64200; --warn-bg: #fff3dc; --warn-text: #6e4300; --warn-edge: #d0410f;
   }
-  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text); cursor: none; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text); }
+  .kiosk, .kiosk body { cursor: none; }   /* full screen only; inside a dashboard card the pointer stays */
   body {
     font-family: system-ui, "Segoe UI", Roboto, "Noto Sans", "DejaVu Sans", sans-serif;
     font-size: 2.5vh; line-height: 1.3;   /* the frame stays put; ?scale= sizes the stories */
   }
   [hidden] { display: none !important; }
+  /* A column: header, warnings, notes, stories (takes the rest), footer. Hidden parts take
+     no space and never shift the others. */
   .screen {
-    display: grid; grid-template-rows: auto auto auto 1fr auto; gap: 1.6vh;
+    display: flex; flex-direction: column; gap: 1.6vh;
     height: 100vh; box-sizing: border-box; padding: 2.6vh 3.2vw 2vh;
   }
+  .screen > * { flex: none; }
+  .screen > main { flex: 1 1 0; }
 
   .top { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 3vw;
          padding-bottom: 1.4vh; border-bottom: 0.25vh solid var(--line); }
@@ -48,25 +54,30 @@
   .alerts h2 { font-size: 0.85em; letter-spacing: 0.1em; text-transform: uppercase; margin: 0 0 0.3em; }
   .alerts ul { list-style: none; margin: 0; padding: 0; }
   .alerts li { font-size: calc(1.45em * min(var(--scale), 1.3)); font-weight: 700; line-height: 1.25; }
-  .alerts .meta { color: var(--warn-text); font-size: 0.6em; font-weight: 400; }
+  .alerts .meta { color: var(--warn-text); font-size: 0.6em; font-weight: 400; margin-left: 0.8em; }
+  .alerts .more { font-size: 0.9em; font-weight: 600; }
 
-  .notes { color: var(--warn-text); font-size: 0.9em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .notes { color: var(--warn-text); font-size: 1.05em;
+           display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+  .notes .minor { color: var(--muted); }
   .notes:empty { display: none; }
 
   main { display: grid; grid-template-rows: auto 1fr; min-height: 0; }
   .subject-head { display: flex; align-items: baseline; justify-content: space-between; gap: 2vw; margin-bottom: 0.4vh; }
   #subject { font-size: 1.15em; color: var(--accent); text-transform: uppercase; letter-spacing: 0.1em; margin: 0; }
   #pageinfo { color: var(--muted); font-size: 0.9em; font-variant-numeric: tabular-nums; }
-  #stories { list-style: none; margin: 0; padding: 0; overflow: hidden; position: relative; min-height: 0; }
+  /* The list reaches 1.6vw into the left margin (padding there isn't clipped), so the "new" bar shows. */
+  #stories { list-style: none; margin: 0 0 0 -1.6vw; padding: 0 0 0 1.6vw; overflow: hidden; position: relative; min-height: 0; }
   .story { padding: 1.4vh 0; border-top: 0.15vh solid var(--line); font-size: calc(1em * var(--scale)); }
   .story.first { border-top: 0; }
+  /* Stories from a fresh edition get a bar in the margin, visible from across the room;
+     the negative margin keeps line widths (and so the screen splits) unchanged. */
+  .story.new { border-left: 0.5vw solid var(--new); margin-left: -1.3vw; padding-left: 0.8vw; }
   .headline {
     font-size: 1.75em; font-weight: 650; line-height: 1.22;
     display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden;
   }
   .meta { color: var(--muted); font-size: 0.95em; margin-top: 0.35em; }
-  .badge { display: inline-block; color: var(--bg); background: var(--new); border-radius: 0.3em; padding: 0 0.45em;
-           font-size: 0.8em; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; margin-right: 0.6em; }
   .message { font-size: 1.6em; color: var(--muted); margin: 6vh 0 0; max-width: 40em; list-style: none; }
   .fade { animation: fade 0.5s ease-out; }
   @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
@@ -75,7 +86,7 @@
   footer { display: grid; gap: 1vh; }
   #dots { display: flex; gap: 0.6vw; flex-wrap: nowrap; overflow: hidden; color: var(--muted); font-size: 0.85em; }
   .dot { padding: 0.15em 0.7em; border-radius: 999px; white-space: nowrap; }
-  .dot.on { background: var(--panel); color: var(--text); font-weight: 650; }
+  .dot.on { background: var(--accent); color: var(--bg); font-weight: 650; }
   .bar { height: 0.5vh; background: var(--line); border-radius: 999px; overflow: hidden; }
   #bar { height: 100%; width: 0; background: var(--accent); }
 </style>
@@ -124,6 +135,8 @@
   if (server && !/^https?:\/\//i.test(server)) server = "http://" + server;
   var DATA_URL = server + "/news.json";
   var fromFile = location.protocol === "file:";
+  if (window.top === window) root.classList.add("kiosk");   // hide the pointer only when full screen
+  var startZone = params.get("tz") || root.getAttribute("data-tz") || undefined;
 
   function $(id) { return document.getElementById(id); }
   function el(tag, cls, text) {
@@ -149,7 +162,7 @@
       ymd: f({ year: "numeric", month: "2-digit", day: "2-digit" }, "en-CA")
     };
   }
-  makeFormats(undefined);
+  makeFormats(startZone);
   function clock(ms) { return fmt.clock.format(new Date(ms)); }
   function when(ms) {
     var d = new Date(ms);
@@ -175,6 +188,8 @@
       var made = Date.parse(e.produced_at || "");
       return e.kind === "ok" && !isNaN(made) && now - made < DAY;
     }).sort(function (a, b) { return Date.parse(b.produced_at) - Date.parse(a.produced_at); });
+    // "New" only means something while the newest edition is recent.
+    var fresh = eds.length > 0 && now - Date.parse(eds[0].produced_at) < 8 * 3600000;
     var order = [];
     eds.forEach(function (e) {
       Object.keys(e.subjects || {}).forEach(function (s) { if (order.indexOf(s) < 0) order.push(s); });
@@ -184,7 +199,7 @@
       var stories = [];
       eds.forEach(function (e, i) {
         (e.subjects[name] || []).forEach(function (st) {
-          stories.push({ title: st.title, source: st.source, time: st.time, isNew: i === 0 });
+          stories.push({ title: st.title, source: st.source, time: st.time, isNew: fresh && i === 0 });
         });
       });
       return { name: name, stories: stories.slice(0, MAX) };
@@ -202,7 +217,18 @@
                          : "No " + groups.map(function (g) { return g.name.toLowerCase(); }).join(" or ") +
                            " warnings" + (isNaN(checked) ? "" : " · checked " + when(checked));
     }
-    return { latest: latest, subjects: subjects, alerts: alerts, wx: wx };
+    var newestEver = 0;
+    (d.editions || []).forEach(function (e) {
+      var made = Date.parse(e.produced_at || "");
+      if (e.kind === "ok" && made > newestEver) newestEver = made;
+    });
+    return { latest: latest, subjects: subjects, alerts: alerts, wx: wx, newestEver: newestEver };
+  }
+
+  // "SNOWFALL WARNING IN EFFECT, City of Calgary" -> "Snowfall warning, City of Calgary"
+  function tidyAlert(t) {
+    t = String(t || "").replace(/\s+in effect\b/i, "");
+    return t.replace(/^[^a-z,]+(?=,|$)/, function (c) { return c.charAt(0) + c.slice(1).toLowerCase(); });
   }
 
   function renderAlerts() {
@@ -214,11 +240,17 @@
     model.alerts.forEach(function (a) { if (names.indexOf(a.group) < 0) names.push(a.group); });
     $("alerts-title").textContent = names.join(" & ") + (model.alerts.length === 1 ? " warning" : " warnings") + " in effect";
     model.alerts.forEach(function (a) {
-      var li = el("li", null, a.title);
-      var parts = [a.source, a.time ? "issued " + when(Date.parse(a.time)) : ""].filter(Boolean);
-      if (parts.length) li.appendChild(el("div", "meta", parts.join(" · ")));
+      var li = el("li", null, tidyAlert(a.title));
+      if (a.time) li.appendChild(el("span", "meta", "issued " + when(Date.parse(a.time))));
       list.appendChild(li);
     });
+    // If they don't all fit, drop the last ones and say how many more there are.
+    var more = null;
+    while (box.scrollHeight > box.clientHeight + 1 && list.children.length > (more ? 2 : 1)) {
+      if (!more) more = list.appendChild(el("li", "more"));
+      list.removeChild(more.previousSibling);
+      more.textContent = "+ " + (model.alerts.length - list.children.length + 1) + " more on the reading page";
+    }
   }
 
   // ---- Rotation: each subject, page by page, SECONDS per screen
@@ -229,6 +261,8 @@
     list.textContent = "";
     $("pageinfo").textContent = "";
     if (!subj) {
+      pos.pages = [[0, 1]];
+      pos.page = 0;
       $("subject").textContent = "";
       list.appendChild(el("li", "message", emptyMessage()));
       renderDots();
@@ -236,13 +270,9 @@
     }
     $("subject").textContent = subj.name;
     subj.stories.forEach(function (st) {
-      var li = el("li", "story");
+      var li = el("li", "story" + (st.isNew ? " new" : ""));
       li.appendChild(el("div", "headline", st.title));
-      var meta = el("div", "meta");
-      if (st.isNew) meta.appendChild(el("span", "badge", "New"));
-      meta.appendChild(document.createTextNode([st.source, st.time ? ago(Date.parse(st.time)) : ""]
-        .filter(Boolean).join(" · ")));
-      li.appendChild(meta);
+      li.appendChild(el("div", "meta", [st.source, st.time ? ago(Date.parse(st.time)) : ""].filter(Boolean).join(" · ")));
       list.appendChild(li);
     });
     paginate();
@@ -313,18 +343,21 @@
   }
 
   // ---- Status lines
-  var failingSince = 0;
+  var failingSince = 0, answered = false;   // answered: the laptop replied, but had no news yet
   function emptyMessage() {
     if (!data) {
       if (fromFile && !server) return "Add the news laptop to this page's address, e.g. ?server=http://192.168.1.50:8765";
+      if (answered) return "The news laptop is on, but has no edition to show yet. The first one appears after the next scheduled run.";
       return failingSince ? "Waiting for the news laptop at " + (server || location.host) + " (it may be asleep)…"
                           : "Loading the news…";
     }
-    return model.latest ? "No new stories in the last day." : "No news from the last day yet.";
+    if (model.latest) return "No new stories in the last day.";
+    if (model.newestEver) return "No news since " + when(model.newestEver) + " (was the laptop off?).";
+    return "No edition yet. The first one appears after the next scheduled run.";
   }
 
   function renderStatus() {
-    var now = Date.now(), notes = [];
+    var now = Date.now(), notes = [], minor = "";
     $("clock").textContent = clock(now);
     $("date").textContent = fmt.date.format(new Date(now));
     $("wx").textContent = model.wx;
@@ -336,20 +369,28 @@
 
     if (fromFile && !server) {
       notes.push("Add ?server=http://LAPTOP-IP:8765 to this page's address to get new editions.");
+    } else if (failingSince && answered) {
+      if (data) notes.push("The news laptop has no news to share right now. Showing what it last sent.");
     } else if (failingSince) {
       notes.push("Can't reach the news laptop since " + when(failingSince) + " (asleep or off?)." +
                  (data ? " Showing what it last sent." : ""));
     } else if (next && now > next + 20 * 60000) {
       notes.push("The " + data.next.name + " edition (" + clock(next) + ") is late.");
     }
-    if (data && data.problem && data.problem.message) notes.push(data.problem.message);
+    if (data && data.problem && data.problem.message) {
+      notes.push(String(data.problem.message).split(/([.!?])\s/).slice(0, 2).join(""));   // first sentence
+    }
     var missing = (latest && (latest.missing || [])) || [];
     if (missing.length) {
       var names = [];
       missing.forEach(function (m) { var n = typeof m === "string" ? m : m.name; if (names.indexOf(n) < 0) names.push(n); });
-      notes.push("Missing this time: " + names.join(", "));
+      minor = names.join(", ") + " didn't answer this time";
     }
-    $("notes").textContent = notes.join("  ·  ");
+    var box = $("notes"), text = notes.join("  ·  ");
+    if (box.getAttribute("data-text") === text + "|" + minor) return;   // unchanged: leave the layout alone
+    box.setAttribute("data-text", text + "|" + minor);
+    box.textContent = text;
+    if (minor) box.appendChild(el("span", "minor", (text ? "  ·  " : "") + minor));
   }
 
   // ---- Fetching: every minute; the screen keeps the last good news if the laptop is away
@@ -367,10 +408,15 @@
 
   function refresh() {
     if (fromFile && !server) { renderStatus(); if (!data) renderSubject(); return; }
+    answered = false;
     var ctrl = window.AbortController ? new AbortController() : null;
     var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 15000) : null;
     fetch(DATA_URL, { cache: "no-store", signal: ctrl ? ctrl.signal : undefined })
-      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
+      .then(function (r) {
+        answered = true;
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.text();
+      })
       .then(function (text) {
         var d = JSON.parse(text);
         failingSince = 0;
@@ -379,6 +425,7 @@
       })
       .catch(function () {
         if (!failingSince) failingSince = Date.now();
+        // A network error leaves `answered` false; a reply like 503 (no edition yet) sets it.
         renderStatus();
         if (!data) renderSubject();
       })

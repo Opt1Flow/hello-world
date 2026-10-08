@@ -10,8 +10,10 @@ fetched. Start it with `python newsbot.py serve`; install_server.ps1 starts it a
 import base64
 import hashlib
 import logging
+import os
 import re
 import socket
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -31,18 +33,48 @@ ROUTES = {  # address -> (which file, content type)
 
 
 def script_hashes(page):
-    """CSP hashes of the page's inline scripts, so only those exact scripts may run."""
+    """CSP hashes of the page's inline scripts, so only those exact scripts may run.
+
+    Browsers hash the script after turning Windows line endings (CRLF) into LF, so we do the
+    same: a Windows checkout of kiosk.html must still match.
+    """
+    page = page.replace("\r\n", "\n").replace("\r", "\n")
     return " ".join(
         "'sha256-" + base64.b64encode(hashlib.sha256(body.encode("utf-8")).digest()).decode() + "'"
         for body in re.findall(r"<script>(.*?)</script>", page, re.S))
 
 
-def make_handler(cfg):
-    files = {"html": cfg["html_output"], "json": cfg["json_output"], "kiosk": KIOSK}
+class LiveConfig:
+    """The server runs for days: re-read config.toml when it changes (e.g. `output` moved into
+    an Obsidian vault), and keep the last good settings if the new file has a mistake."""
 
+    def __init__(self, cfg, path=None, loader=None):
+        self.cfg, self.path, self.loader = cfg, path, loader
+        self.mtime = self._mtime()
+
+    def _mtime(self):
+        try:
+            return os.stat(self.path).st_mtime if self.path else None
+        except OSError:
+            return None
+
+    def get(self):
+        mtime = self._mtime()
+        if self.loader and mtime != self.mtime:
+            self.mtime = mtime
+            try:
+                self.cfg = self.loader()
+                log.info("Reloaded config.toml")
+            except Exception as exc:
+                log.warning("config.toml has a problem, keeping the previous settings: %s", exc)
+        return self.cfg
+
+
+def make_handler(live):
     class Handler(BaseHTTPRequestHandler):
         server_version = "newsbot"
         sys_version = ""
+        timeout = 30   # an idle or stuck connection can't hold a thread forever
 
         def do_GET(self):
             self.respond(send_body=True)
@@ -55,8 +87,10 @@ def make_handler(cfg):
             if not route:
                 return self.send(404, b"Not found\n", "text/plain; charset=utf-8", send_body)
             which, content_type = route
+            cfg = live.get()
+            path = {"html": cfg["html_output"], "json": cfg["json_output"], "kiosk": KIOSK}[which]
             try:
-                body = files[which].read_bytes()
+                body = path.read_bytes()
             except OSError:
                 return self.send(503, b"No edition yet. The first one appears after the next "
                                       b"scheduled run.\n", "text/plain; charset=utf-8", send_body)
@@ -64,6 +98,10 @@ def make_handler(cfg):
             if which == "json":
                 headers["Access-Control-Allow-Origin"] = "*"   # a kiosk page saved on the Pi may read it
             if which == "kiosk":
+                # Tell the page the bot's timezone up front (outside the script, so the hash holds).
+                zone = getattr(cfg.get("tz"), "key", "") or ""
+                if re.fullmatch(r"[A-Za-z0-9_+\-/]+", zone):
+                    body = body.replace(b'<html lang="en">', f'<html lang="en" data-tz="{zone}">'.encode(), 1)
                 headers["Content-Security-Policy"] = (
                     "default-src 'none'; style-src 'unsafe-inline'; img-src data:; "
                     f"connect-src 'self'; script-src {script_hashes(body.decode('utf-8'))}")
@@ -90,13 +128,16 @@ def make_handler(cfg):
 
 class Server(ThreadingHTTPServer):
     daemon_threads = True
+    # On Windows, address reuse lets a second program listen on the same port unnoticed;
+    # without it a busy port is reported as an error instead.
+    allow_reuse_address = os.name != "nt"
 
     def handle_error(self, request, client_address):  # e.g. the TV dropped the connection
         log.debug("Request from %s failed", client_address, exc_info=True)
 
 
-def make_server(cfg, port, host="0.0.0.0"):
-    return Server((host, port), make_handler(cfg))
+def make_server(cfg, port, host="0.0.0.0", loader=None, config_path=None):
+    return Server((host, port), make_handler(LiveConfig(cfg, config_path, loader)))
 
 
 def lan_address():
@@ -111,8 +152,14 @@ def lan_address():
         probe.close()
 
 
-def serve(cfg, port):
-    server = make_server(cfg, port)
+def serve(cfg, port, loader=None, config_path=None):
+    while True:  # e.g. the port is still held by a server that's shutting down: keep trying
+        try:
+            server = make_server(cfg, port, loader=loader, config_path=config_path)
+            break
+        except OSError as exc:
+            log.error("Can't listen on port %s (%s); retrying in 60 s", port, exc)
+            time.sleep(60)
     url = f"http://{lan_address()}:{server.server_port}"
     log.info("Serving the news on your network: reading page %s/  kiosk %s/kiosk", url, url)
     print(f"Reading page: {url}/\nKiosk / TV:   {url}/kiosk\n(Ctrl+C to stop)")

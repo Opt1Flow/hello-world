@@ -28,7 +28,7 @@ taking turns every 20 seconds. Nothing to click. The laptop shares it on your ho
 2. On the Pi, point Chromium (or the dashboard's page list) at that address.
    In Home Assistant, a **Webpage** card with the same address works too, as long as you
    open Home Assistant over plain `http://` on your home network: browsers block an `http`
-   page inside an `https` one.
+   page inside an `https` one. Put it in a **panel** (single-card) view so the text is TV-sized.
 3. Options go at the end of the address, e.g. `/kiosk?seconds=30&scale=1.3`:
    `seconds` (how long each screen stays), `scale` (story text size), `max` (stories per
    subject), `theme=light`.
@@ -40,12 +40,15 @@ Good to know:
   Windows to not sleep while plugged in (Settings > System > Power).
 - **Pi starts while the laptop sleeps:** a page loaded from the laptop can't appear until
   the laptop wakes. To avoid that, copy `kiosk.html` onto the Pi and open it as a file with
-  the laptop's address added:
-  `file:///home/pi/kiosk.html?server=http://192.168.1.50:8765`
+  the laptop's address added (and the timezone, for the clock before the first news arrives):
+  `file:///home/pi/kiosk.html?server=http://192.168.1.50:8765&tz=America/Edmonton`
+  Copy it again after you update the bot.
 - **The address changes:** give the laptop a fixed address in your router (a "DHCP
   reservation"), so the Pi always finds it.
 - The reading page is shared too, at `http://<laptop address>:8765/` (handy on a phone).
   Nothing else in this folder can be reached.
+- If the kiosk shows nothing, check `data\server.log` on the laptop; the server restarts
+  itself within 15 minutes if it ever stops.
 
 ## How it works
 
