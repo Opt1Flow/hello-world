@@ -4,6 +4,7 @@
     python newsbot.py run Morning    produce one edition right now (for testing)
     python newsbot.py status         show recent runs and the next edition
     python newsbot.py open           open the reading page (news.html) in your browser
+    python newsbot.py serve          share the pages on your home network (e.g. a Pi kiosk)
 
 Each run checks a small SQLite log ("ledger") of which editions were already produced, so a
 laptop that was asleep at 06:00 still gets its Morning edition within 15 minutes of waking.
@@ -49,6 +50,7 @@ def load_config(path=APP_DIR / "config.toml"):
     cfg["output"] = (APP_DIR / cfg["output"]).resolve()  # resolve() also follows symlinks
     html_out = cfg.get("html_output")
     cfg["html_output"] = (APP_DIR / html_out).resolve() if html_out else cfg["output"].with_suffix(".html")
+    cfg["json_output"] = cfg["html_output"].with_suffix(".json")  # data for the kiosk view
     return cfg
 
 
@@ -435,7 +437,8 @@ def atomic_write(path, text):
 # ---------------------------------------------------------------- the reading page
 
 def write_html(cfg, db, now):
-    """Rebuild news.html from the stored editions. A failure here never blocks an edition."""
+    """Rebuild news.html, and news.json for the kiosk view, from the stored editions.
+    A failure here never blocks an edition."""
     try:
         stored = {row[0]: row for row in db.execute("SELECT * FROM editions")}
         slots = {name: slot for slot, name in recent_slots(now, cfg)}
@@ -450,9 +453,17 @@ def write_html(cfg, db, now):
                              "slot": ui.parse_time(slot), "produced_at": ui.parse_time(produced_at),
                              "since": ui.parse_time(since), **json.loads(data)})
         first_run = db.execute("SELECT count(*) FROM runs").fetchone()[0] == 0
-        page = ui.render_page(editions, cfg["tz"], now, next_slot(now, cfg), get_problem(db),
-                              str(cfg["output"]), first_run)
+        upcoming, problem = next_slot(now, cfg), get_problem(db)
+        page = ui.render_page(editions, cfg["tz"], now, upcoming, problem, str(cfg["output"]), first_run)
         atomic_write(cfg["html_output"], page)
+        if cfg.get("json_output"):
+            atomic_write(cfg["json_output"], json.dumps({
+                "generated": now.isoformat(),
+                "timezone": getattr(cfg["tz"], "key", None),
+                "next": {"time": upcoming[0].isoformat(), "name": upcoming[1]} if upcoming else None,
+                "problem": problem,
+                "editions": editions,
+            }, default=lambda value: value.isoformat(), ensure_ascii=False))
     except Exception:
         log.exception("Could not write the reading page %s", cfg["html_output"])
 
@@ -571,9 +582,9 @@ class RunLock:
         self.f.close()
 
 
-def setup_logging():
+def setup_logging(filename="newsbot.log"):
     DATA_DIR.mkdir(exist_ok=True)
-    handlers = [RotatingFileHandler(DATA_DIR / "newsbot.log", maxBytes=1_000_000,
+    handlers = [RotatingFileHandler(DATA_DIR / filename, maxBytes=1_000_000,
                                     backupCount=3, encoding="utf-8")]
     if sys.stderr:  # pythonw.exe (no console) has no stderr
         handlers.append(logging.StreamHandler())
@@ -605,11 +616,17 @@ def main(argv=None):
     sub.add_parser("run-due")
     sub.add_parser("status")
     sub.add_parser("open")
+    sub.add_parser("serve").add_argument("--port", type=int, default=None)
     sub.add_parser("run").add_argument("edition")
     args = parser.parse_args(argv)
 
-    setup_logging()
+    # The server runs all day next to the scheduled runs, so it keeps its own log file
+    # (on Windows one process can't rotate a log another process has open).
+    setup_logging("server.log" if args.cmd == "serve" else "newsbot.log")
     cfg = load_config()
+    if args.cmd == "serve":
+        import server
+        return server.serve(cfg, args.port or cfg.get("serve_port", 8765))
     error_file = cfg["output"].with_name(cfg["output"].name + ".ERROR.txt")
     now = datetime.now(timezone.utc)
     if args.cmd == "open":

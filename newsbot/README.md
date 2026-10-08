@@ -12,6 +12,41 @@ Builds a Calgary + world news digest three times a day (06:00, 13:00, 19:00).
 - **`news.md`** is the editable copy for your notes (for example in Obsidian). Only the
   parts between the edition markers are ever replaced.
 
+## Showing it on the Pi kiosk (or any screen at home)
+
+`kiosk.html` is a TV view of the news: large type, weather warnings on top, and the subjects
+taking turns every 20 seconds. Nothing to click. The laptop shares it on your home network:
+
+1. On the laptop, in PowerShell opened with **Run as administrator**, inside this folder:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File install_server.ps1
+   ```
+
+   It starts the server now and at every logon, opens port 8765 for your **Private** (home)
+   network only, and prints the address to use, e.g. `http://192.168.1.50:8765/kiosk`.
+2. On the Pi, point Chromium (or the dashboard's page list) at that address.
+   In Home Assistant, a **Webpage** card with the same address works too, as long as you
+   open Home Assistant over plain `http://` on your home network: browsers block an `http`
+   page inside an `https` one.
+3. Options go at the end of the address, e.g. `/kiosk?seconds=30&scale=1.3`:
+   `seconds` (how long each screen stays), `scale` (story text size), `max` (stories per
+   subject), `theme=light`.
+
+Good to know:
+
+- **Laptop asleep:** the kiosk keeps showing the last news it received and says it can't
+  reach the laptop; it catches up when the laptop wakes. To keep it current all day, set
+  Windows to not sleep while plugged in (Settings > System > Power).
+- **Pi starts while the laptop sleeps:** a page loaded from the laptop can't appear until
+  the laptop wakes. To avoid that, copy `kiosk.html` onto the Pi and open it as a file with
+  the laptop's address added:
+  `file:///home/pi/kiosk.html?server=http://192.168.1.50:8765`
+- **The address changes:** give the laptop a fixed address in your router (a "DHCP
+  reservation"), so the Pi always finds it.
+- The reading page is shared too, at `http://<laptop address>:8765/` (handy on a phone).
+  Nothing else in this folder can be reached.
+
 ## How it works
 
 - **Short check-ins instead of an always-running loop.** Windows Task Scheduler starts
@@ -59,7 +94,7 @@ page then goes next to it (`html_output` changes that).
 ## Day to day
 
 - `newsbot.py status` lists recent runs (`ok`, or `skipped` for a missed edition).
-- Logs are in `data/newsbot.log`.
+- Logs are in `data/newsbot.log` (and `data/server.log` for the kiosk server).
 - Change feeds, subjects, warning feeds (`[alerts]`), short source names (`[sources]`) or
   edition times in `config.toml`. Delete one line under `[editions]` to go to two
   editions a day.
