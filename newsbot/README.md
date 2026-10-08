@@ -20,16 +20,24 @@ Markdown file you can read and edit, for example in Obsidian.
 - **Each story appears once.** Every edition shows only items first seen since the
   previous edition, and never anything published more than 24 hours ago.
 
-## Setup on Windows (PowerShell, inside this folder)
+## Setup on Windows
 
-```powershell
-py -3.12 -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
-.venv\Scripts\python check_feeds.py          # which feeds work? fix config.toml if any FAIL
-.venv\Scripts\python newsbot.py run Morning  # make one edition now; open news.md
-.venv\Scripts\python -m pytest tests         # optional: run the tests
-powershell -ExecutionPolicy Bypass -File install_task.ps1
-```
+1. **Double-click `setup.bat`** in this folder. It creates the Python environment
+   (`.venv`), installs the libraries, checks every feed (`OK` / `FAIL`) and runs the
+   tests. If any feed says `FAIL`, replace it in `config.toml`.
+2. In PowerShell, inside this folder, make one edition now and open `news.md`:
+
+   ```powershell
+   .venv\Scripts\python newsbot.py run Morning
+   ```
+
+3. Register the scheduled task:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File install_task.ps1
+   ```
+
+Type each command on its own line and press Enter after each one.
 
 Then open Task Scheduler, select **NewsBot**, and confirm the trigger says
 *Repeat task every 15 minutes for a duration of: Indefinitely*. If registering fails with
