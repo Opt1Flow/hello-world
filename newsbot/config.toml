@@ -17,17 +17,17 @@ Afternoon = "13:00"
 Evening = "19:00"
 
 # subject = [feeds]. A story appears once, under the first subject that lists it.
-# NOT YET VERIFIED: the Calgary/Alberta/CBC URLs could not be reached from the build
-# environment. Run `python check_feeds.py` once and replace any that fail.
+# Run `python check_feeds.py` after changing feeds; replace any that FAIL.
 [subjects]
 "Calgary & Alberta" = [
     "https://www.cbc.ca/webfeed/rss/rss-canada-calgary",
     "https://globalnews.ca/calgary/feed/",
     "https://calgaryherald.com/feed",
-    "https://www.alberta.ca/newsroom/newsroom.cfm?deptID=135",
+    # Alberta government newsroom: the old RSS address now returns a web page.
+    # If you find its current feed link on alberta.ca, add it here.
 ]
 "Weather alerts" = [
-    "https://weather.gc.ca/rss/warning/ab-52_e.xml",   # Environment Canada, Calgary
+    "https://weather.gc.ca/rss/battleboard/ab12_e.xml",   # Environment Canada: City of Calgary
 ]
 "Canada" = [
     "https://www.cbc.ca/webfeed/rss/rss-canada",

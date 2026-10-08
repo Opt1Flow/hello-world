@@ -108,16 +108,32 @@ def clean_title(title):
     return re.sub(r"!{2,}", "", title).strip()
 
 
+BOT_UA = "newsbot/1.0 (personal news digest)"
+# Some sites (CBC, for one) silently stall requests that don't look like a browser.
+BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/130.0 Safari/537.36")
+
+
 def make_fetcher():
     session = requests.Session()
-    session.headers["User-Agent"] = "newsbot/1.0 (personal news digest)"
-    retry = Retry(total=2, backoff_factor=2, status_forcelist=[429, 500, 502, 503, 504])
+    # read=0: a stalled server isn't retried with the same request; see the fallback below
+    retry = Retry(total=2, read=0, backoff_factor=2, status_forcelist=[429, 500, 502, 503, 504])
     session.mount("https://", HTTPAdapter(max_retries=retry))
     session.mount("http://", HTTPAdapter(max_retries=retry))
 
-    def fetch(url):
-        resp = session.get(url, timeout=(5, 20))  # (connect, read) seconds
+    def get(url, user_agent):
+        resp = session.get(url, timeout=(5, 20), headers={"User-Agent": user_agent})
         resp.raise_for_status()
+        return resp
+
+    def fetch(url):
+        try:
+            resp = get(url, BOT_UA)
+        except (requests.ConnectionError, requests.Timeout, requests.HTTPError) as exc:
+            if isinstance(exc, requests.HTTPError) and exc.response.status_code != 403:
+                raise
+            log.info("Retrying %s as a browser (%s)", url, type(exc).__name__)
+            resp = get(url, BROWSER_UA)
         feed = feedparser.parse(io.BytesIO(resp.content), response_headers=dict(resp.headers))
         if feed.bozo and not feed.entries:
             raise ValueError(f"not a feed: {feed.get('bozo_exception')}")
