@@ -434,12 +434,10 @@
     l.target.scrollIntoView({ block: "start" });
   });
 
-  document.addEventListener("keydown", function (e) {
-    var t = e.target, editable = t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
-    if (e.key === "/" && !editable && !e.ctrlKey && !e.altKey && !e.metaKey && !e.isComposing) {
-      e.preventDefault(); filter.focus();
-    }
-    if (e.key === "Escape" && t === filter) { filter.value = ""; applyFilter(); }
+  // Escape clears the search. It only works while the search box has focus, so a stray key
+  // press (or misheard voice command) elsewhere on the page can never trigger anything.
+  filter.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") { filter.value = ""; applyFilter(); }
   });
 
   // ---- Refreshing. The bot rewrites this file; the page picks up new editions by reloading:

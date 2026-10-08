@@ -7,7 +7,7 @@ Builds a Calgary + world news digest three times a day (06:00, 13:00, 19:00).
 - **`news.html`** is the reading page: open it with `.venv\Scripts\python newsbot.py open`
   (or double-click the file) and keep the tab open or bookmark it. Each edition is a tab,
   weather warnings sit at the top while they're in effect, and the search box looks through
-  all editions (press `/` to jump to it). A dot marks an edition you haven't opened yet.
+  all editions (Escape clears it). A dot marks an edition you haven't opened yet.
   The page refreshes itself when a new edition is due and says so if one is late.
 - **`news.md`** is the editable copy for your notes (for example in Obsidian). Only the
   parts between the edition markers are ever replaced.
