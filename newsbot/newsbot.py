@@ -5,6 +5,7 @@
     python newsbot.py status         show recent runs and the next edition
     python newsbot.py open           open the reading page (news.html) in your browser
     python newsbot.py serve          share the pages on your home network (e.g. a Pi kiosk)
+    python newsbot.py neutral "..."  try the factual rewrite on one headline
 
 Each run checks a small SQLite log ("ledger") of which editions were already produced, so a
 laptop that was asleep at 06:00 still gets its Morning edition within 15 minutes of waking.
@@ -107,6 +108,8 @@ def open_db(path=None):
         CREATE TABLE IF NOT EXISTS editions (
             edition TEXT PRIMARY KEY, kind TEXT, slot TEXT, produced_at TEXT, since TEXT, data TEXT);
         CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+        CREATE TABLE IF NOT EXISTS rewrites (
+            original TEXT, model TEXT, neutral TEXT, at TEXT, PRIMARY KEY (original, model));
         CREATE TABLE IF NOT EXISTS feeds (
             url TEXT PRIMARY KEY, first_checked TEXT, last_ok TEXT, last_new TEXT,
             fails INTEGER DEFAULT 0, last_error TEXT, etag TEXT, modified TEXT);
@@ -392,10 +395,14 @@ def title_words(title):
 def names(title):
     """Capitalised words after the first: places, people, teams ('Forest', 'Lawn', 'Oilers').
     Headlines in Title Case capitalise everything, so for those we can't tell and return none."""
-    words = re.findall(r"[A-Za-z][A-Za-z'-]*", title)[1:]
-    caps = [w for w in words if w[0].isupper()]
+    all_words = re.findall(r"[A-Za-z][A-Za-z'-]*", title)
+    words = all_words[1:]
+    # Long all-caps words are shouting ("SLAMS"), not names; short ones are acronyms (RCMP).
+    caps = [w for w in words if w[0].isupper() and not (w.isupper() and len(w) >= 5)]
     if not words or len(caps) / len(words) > 0.6:
         return set()
+    if all_words[0].isupper() and 2 <= len(all_words[0]) <= 4:   # a leading acronym is a name too
+        caps.append(all_words[0])
     return {w.lower().replace("'s", "") for w in caps}
 
 
@@ -510,6 +517,163 @@ def select_items(cfg, db, since, now):
     return grouped
 
 
+# ---------------------------------------------------------------- factual wording
+
+# The AI only sees the headline (not the article), so it can restate the headline's facts in
+# plain words but can't check them. Every rewrite is therefore checked: it may change the tone,
+# never the facts. A rewrite that fails the check is replaced by the rule-based cleanup below.
+
+REWRITE_PROMPT = """You rewrite news headlines so they state the facts in plain, neutral language.
+Rules:
+- Keep every fact in the headline: who, what, where, when, and every number, exactly as written.
+- Add nothing that is not in the headline: no new names, places, numbers, causes or opinions.
+- Replace emotional, sensational or loaded words with plain ones ("slams" -> "criticizes",
+  "chaos" -> "disruption") and drop words that only add emotion ("shocking", "horrific").
+- Keep negations ("not", "no", "never"). Keep who said what: a claim or opinion stays the
+  speaker's ("X says ...", "X calls it '...'").
+- A question becomes a neutral statement of the topic, without answering it.
+- Sentence case, no exclamation marks, at most 16 words.
+- If the headline is already neutral and factual, return it unchanged.
+Examples:
+"Horrific crash on Deerfoot Trail kills 2" -> "Crash on Deerfoot Trail kills 2"
+"Premier SLAMS Ottawa's 'insane' carbon tax plan" -> "Premier criticizes Ottawa's carbon tax plan, calls it 'insane'"
+"Is Calgary's housing bubble about to burst?" -> "Outlook for Calgary's housing market"
+Return one item for every input id."""
+
+REWRITE_SCHEMA = {
+    "type": "object",
+    "properties": {"headlines": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"id": {"type": "integer"}, "neutral": {"type": "string"}},
+        "required": ["id", "neutral"]}}},
+    "required": ["headlines"],
+}
+
+NEGATION = re.compile(r"\b(no|not|never|without|none|nobody|nothing|neither|nor|cannot)\b|n't\b", re.I)
+# A quote starts and ends at a word boundary, so the apostrophe in "Ottawa's" isn't one.
+QUOTED = re.compile(r"(?:^|(?<=[\s(]))[\"\u201c\u2018']([^\"\u201c\u201d\u2018\u2019]{2,}?)[\"\u201d\u2019'](?=$|[\s,.;:!?)])")
+
+
+def numbers_in(text):
+    return {n.replace(",", "") for n in re.findall(r"\d[\d,.]*\d|\d", text)}
+
+
+def check_rewrite(original, neutral):
+    """Why a rewrite can't be trusted, or None if it keeps the facts."""
+    if not neutral or len(neutral.split()) < 3:
+        return "too short"
+    if len(neutral) > len(original) + 25:
+        return "much longer than the original"
+    if numbers_in(neutral) != numbers_in(original):
+        return "numbers changed"
+    if bool(NEGATION.search(neutral)) != bool(NEGATION.search(original)):
+        return "a negation was added or lost"
+    original_words = set(re.findall(r"[a-z0-9]+", original.lower()))
+    neutral_words = set(re.findall(r"[a-z0-9]+", neutral.lower()))
+    capitalised = {w.lower() for w in re.findall(r"[A-Za-z][A-Za-z'-]*", neutral)[1:] if w[0].isupper()}
+    added = {w for w in capitalised if not set(re.findall(r"[a-z0-9]+", w)) <= original_words}
+    if added:
+        return f"added a name ({', '.join(sorted(added))})"
+    dropped = {n for n in names(original) if not set(re.findall(r"[a-z0-9]+", n)) <= neutral_words}
+    if dropped:
+        return f"dropped a name ({', '.join(sorted(dropped))})"
+    for quote in QUOTED.findall(neutral):
+        if quote.lower() not in original.lower():
+            return "invented a quote"
+    if len(title_words(neutral) - title_words(original)) > 3:
+        return "too many new words"
+    return None
+
+
+EMOTION_ONLY = re.compile(
+    r"\b(shocking|horrific|horrifying|devastating|terrifying|stunning|chilling|heartbreaking|"
+    r"heart-wrenching|jaw-dropping|insane|outrageous|bombshell|harrowing|absolutely)\s+", re.I)
+LOADED_VERBS = [
+    (r"\b(slams|lashes out at|rips into|rails against)\b", "criticizes"),
+    (r"\b(slammed|lashed out at|ripped into|railed against)\b", "criticized"),
+    (r"\bslam\b", "criticize"),
+    (r"\bchaos\b", "disruption"),
+]
+
+
+def rule_neutral(title):
+    """The fallback when the AI isn't available or its rewrite failed the check: remove words
+    that only add emotion and replace a few loaded verbs. It never touches names or numbers."""
+    text = EMOTION_ONLY.sub("", title)
+    for pattern, plain in LOADED_VERBS:
+        text = re.sub(pattern, lambda m: plain.capitalize() if m.start() == 0 else plain, text, flags=re.I)
+    text = re.sub(r"\s{2,}", " ", text).strip(" ,;:-")
+    return text[:1].upper() + text[1:] if text else title
+
+
+def ollama_rewrite(cfg, titles, timeout):
+    """{original: rewrite} for a batch of headlines from the local AI (Qwen3 via Ollama)."""
+    ai = cfg.get("ai") or {}
+    resp = requests.post(ai.get("ollama", "http://localhost:11434").rstrip("/") + "/api/chat", json={
+        "model": ai["rewrite_model"],
+        "messages": [{"role": "system", "content": REWRITE_PROMPT},
+                     {"role": "user", "content": json.dumps(
+                         [{"id": i, "headline": t} for i, t in enumerate(titles)], ensure_ascii=False)}],
+        "format": REWRITE_SCHEMA,
+        "stream": False,
+        "think": False,                       # Qwen3: answer directly, no long reasoning
+        "options": {"temperature": 0},
+    }, timeout=timeout)
+    resp.raise_for_status()
+    content = re.sub(r"<think>.*?</think>", "", resp.json()["message"]["content"], flags=re.S)
+    out = {}
+    for item in json.loads(content).get("headlines", []):
+        if isinstance(item.get("id"), int) and 0 <= item["id"] < len(titles):
+            out[titles[item["id"]]] = str(item.get("neutral", ""))
+    return out
+
+
+def neutral_headlines(cfg, db, titles, now, budget=None):
+    """{original: factual headline} for every title. AI rewrites are checked, cached and used;
+    otherwise the rule-based cleanup is used, so every headline gets the plain treatment."""
+    ai = cfg.get("ai") or {}
+    model = ai.get("rewrite_model")
+    deadline = time.monotonic() + (budget or ai.get("rewrite_budget_seconds", 240))
+    result, todo = {}, []
+    for t in dict.fromkeys(titles):
+        row = db.execute("SELECT neutral FROM rewrites WHERE original=? AND model=?", (t, model)).fetchone()
+        if row:
+            result[t] = row[0]
+        else:
+            todo.append(t)
+    ai_ok = bool(model)
+    for start in range(0, len(todo), 8):
+        batch, rewrites = todo[start:start + 8], {}
+        if ai_ok and time.monotonic() < deadline:
+            try:
+                rewrites = ollama_rewrite(cfg, batch, timeout=max(10, min(120, deadline - time.monotonic())))
+            except Exception as exc:
+                log.warning("Local AI rewrite unavailable (%s); using the rule-based cleanup", exc)
+                ai_ok = False
+        for t in batch:
+            neutral = clean_title(rewrites.get(t, "")).rstrip(".")
+            problem = check_rewrite(t, neutral) if neutral else "no rewrite"
+            if problem is None:
+                result[t] = neutral
+                db.execute("INSERT OR REPLACE INTO rewrites VALUES (?,?,?,?)", (t, model, neutral, now.isoformat()))
+            else:
+                if neutral:
+                    log.info("Rewrite of %r not used (%s): %r", t, problem, neutral)
+                result[t] = rule_neutral(t)
+    db.execute("DELETE FROM rewrites WHERE at < ?", ((now - 7 * WINDOW).isoformat(),))
+    db.commit()
+    return result
+
+
+def neutralize(cfg, db, grouped, now):
+    """Replace every headline with its factual version; keep the original alongside."""
+    titles = [item[0] for items in grouped.values() for item in items]
+    plain = neutral_headlines(cfg, db, titles, now)
+    return {subject: [(plain[t], link, src, when, also, t if plain[t] != t else None)
+                      for t, link, src, when, also in items]
+            for subject, items in grouped.items()}
+
+
 def md_escape(text):
     """Headlines stay plain text in Markdown: no links, autolinks or HTML from feed text."""
     return (text.replace("\\", "\\\\").replace("<", "&lt;")
@@ -545,9 +709,10 @@ def render_edition(cfg, edition, now, since, grouped, missing, alerts, health=()
             lines.append(f"\n**{name}:** no warnings in effect")
     for subject, items in grouped.items():
         lines.append(f"\n### {subject}")
-        for t, link, src, _, also in items:
+        for t, link, src, _, also, original in items:
             extra = ", ".join(f"[{md_escape(a['source'])}]({a['link']})" for a in also)
-            lines.append(f"- {md_escape(t)} — [{md_escape(src)}]({link})" + (f" · also {extra}" if extra else ""))
+            lines.append(f"- {md_escape(t)} — [{md_escape(src)}]({link})" + (f" · also {extra}" if extra else "")
+                         + (f" · _original: \u201c{md_escape(original)}\u201d_" if original else ""))
         if not items:
             lines.append("- _No new items_")
     return "\n".join(lines)
@@ -679,15 +844,16 @@ def produce(cfg, db, edition, slot, now, fetch, stubs=(), scheduled=True):
             write_html(cfg, db, now)
         return False
     since = max(filter(None, [last_ok_run(db), now - WINDOW]))
-    grouped = select_items(cfg, db, since, now)
+    grouped = neutralize(cfg, db, select_items(cfg, db, since, now), now)
     alerts = check_alerts(cfg, fetch, now)
     health = feed_health(cfg, db, now)
     subject_of = {url: subject for subject, urls in cfg["subjects"].items() for url in urls}
     missing = [{"name": source_name(cfg, url), "subject": subject_of[url]} for url in failed]
     sections = {edition: render_edition(cfg, edition, now, since, grouped, missing, alerts, health)}
     store_edition(db, edition, "ok", slot, now, since, {
-        "subjects": {subject: [{"title": t, "link": link, "source": src, "time": when, "also": also}
-                               for t, link, src, when, also in items]
+        "subjects": {subject: [{"title": t, "link": link, "source": src, "time": when, "also": also,
+                                "original": original}
+                               for t, link, src, when, also, original in items]
                      for subject, items in grouped.items()},
         "missing": missing, "total_feeds": total, "alerts": alerts, "health": health})
     for s, name in stubs:
@@ -791,6 +957,28 @@ def setup_logging(filename="newsbot.log"):
     logging.getLogger("urllib3").setLevel(logging.ERROR)  # per-retry noise; failures are logged below
 
 
+def try_neutral(cfg, headline):
+    """Show what happens to one headline: the AI's rewrite, the check, and the result."""
+    title = clean_title(headline)
+    model = (cfg.get("ai") or {}).get("rewrite_model")
+    print(f"Original:   {title}")
+    if model:
+        try:
+            rewrite = clean_title(ollama_rewrite(cfg, [title], timeout=120).get(title, "")).rstrip(".")
+            problem = check_rewrite(title, rewrite)
+            print(f"AI ({model}): {rewrite}")
+            print("Check:      " + ("passed" if problem is None else f"failed: {problem}"))
+            if problem is None:
+                print(f"Shown as:   {rewrite}")
+                return 0
+        except Exception as exc:
+            print(f"AI ({model}): not available ({exc})")
+    else:
+        print("AI:         not set up ([ai] rewrite_model in config.toml)")
+    print(f"Shown as:   {rule_neutral(title)}   (rule-based cleanup)")
+    return 0
+
+
 def open_page(cfg, now):
     """Rebuild the reading page if no run is busy, then open it in the default browser."""
     try:
@@ -815,6 +1003,7 @@ def main(argv=None):
     sub.add_parser("status")
     sub.add_parser("open")
     sub.add_parser("serve").add_argument("--port", type=int, default=None)
+    sub.add_parser("neutral").add_argument("headline")
     sub.add_parser("run").add_argument("edition")
     args = parser.parse_args(argv)
 
@@ -831,6 +1020,8 @@ def main(argv=None):
             log.exception("The kiosk server stopped")
             return 1
     cfg = load_config()
+    if args.cmd == "neutral":
+        return try_neutral(cfg, args.headline)
     error_file = cfg["output"].with_name(cfg["output"].name + ".ERROR.txt")
     now = datetime.now(timezone.utc)
     if args.cmd == "open":

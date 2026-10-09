@@ -65,9 +65,14 @@ Evening = "19:00"
 "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml" = "BBC Science"
 "https://feeds.bbci.co.uk/news/technology/rss.xml" = "BBC Technology"
 
-# Optional: let your local AI (Ollama) recognise the same story told in different words.
-# First run once:  ollama pull nomic-embed-text   then remove the # from the lines below.
-# Without it (or when Ollama isn't running) stories are matched on their words alone.
-# [ai]
-# ollama = "http://localhost:11434"
+# Your local AI (Ollama). It rewrites every headline into a plain, factual statement; each
+# rewrite is checked (same numbers, names and negations, nothing invented) before it's used.
+# If Ollama isn't running, a simple rule-based cleanup is used instead.
+[ai]
+ollama = "http://localhost:11434"
+rewrite_model = "qwen3:4b"          # check the exact name with:  ollama list
+rewrite_budget_seconds = 240        # after this, remaining headlines get the rule-based cleanup
+# To also recognise the same story told in different words, run once
+#   ollama pull nomic-embed-text
+# and remove the # from the next line:
 # embed_model = "nomic-embed-text"

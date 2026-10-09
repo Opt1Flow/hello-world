@@ -67,6 +67,9 @@ def render_story(item, tz, ref):
             if (url := safe_url(a.get("link"))) else esc(a.get("source", "")) for a in item.get("also") or []]
     if also:
         meta += " · also " + ", ".join(also)
+    if item.get("original"):
+        meta += (f' · <span class="reworded" title="Original headline: {esc(item["original"])}">'
+                 f'reworded</span>')
     return f'<li class="story">{headline(item)}<div class="meta">{meta}</div></li>'
 
 
