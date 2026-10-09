@@ -13,6 +13,7 @@ import argparse
 import io
 import json
 import logging
+import math
 import os
 import re
 import socket
@@ -372,9 +373,115 @@ def _try_fetch(fetch, url):
 
 # ---------------------------------------------------------------- composing
 
+# ---- the same story from several outlets
+
+STOPWORDS = set("""a an the and or but of to in on for at by with from as is are was were be been
+being it its this that these those after before over under into onto off up down out about than
+then more most amid via new says say said could would will may might can has have had not no""".split())
+
+
+def title_words(title):
+    """Content words of a headline, lightly normalised ('approves' and 'approve' match)."""
+    words = set()
+    for w in re.findall(r"[a-z0-9]+", title.lower().replace("'s", "")):
+        if len(w) > 2 and w not in STOPWORDS:
+            words.add(w[:-1] if len(w) > 4 and w.endswith("s") else w)
+    return words
+
+
+def names(title):
+    """Capitalised words after the first: places, people, teams ('Forest', 'Lawn', 'Oilers').
+    Headlines in Title Case capitalise everything, so for those we can't tell and return none."""
+    words = re.findall(r"[A-Za-z][A-Za-z'-]*", title)[1:]
+    caps = [w for w in words if w[0].isupper()]
+    if not words or len(caps) / len(words) > 0.6:
+        return set()
+    return {w.lower().replace("'s", "") for w in caps}
+
+
+def conflicting_names(a, b):
+    """Each headline names something the other doesn't mention (Forest Lawn vs Bowness,
+    Oilers vs Canucks): different stories, however alike the rest is."""
+    a_words, b_words = set(re.findall(r"[a-z0-9]+", a.lower())), set(re.findall(r"[a-z0-9]+", b.lower()))
+    only_a = {n for n in names(a) if not set(re.findall(r"[a-z0-9]+", n)) <= b_words}
+    only_b = {n for n in names(b) if not set(re.findall(r"[a-z0-9]+", n)) <= a_words}
+    return bool(only_a and only_b)
+
+
+def word_similarity(a, b, weight):
+    """Weighted overlap of two headlines' words (0..1). Rare words count much more than common
+    ones, so two different stories that share "Calgary police investigate shooting" but name
+    different neighbourhoods stay apart."""
+    common = a & b
+    if len(common) < 2:
+        return 0.0
+    union = sum(weight(w) for w in a | b)
+    return sum(weight(w) for w in common) / union if union else 0.0
+
+
+def embed_titles(cfg, titles):
+    """Meaning vectors for headlines from the local AI (Ollama), or None if it isn't set up or
+    isn't running. Optional: without it, headlines are matched on their words alone."""
+    ai = cfg.get("ai") or {}
+    if not ai.get("embed_model") or not titles:
+        return None
+    try:
+        resp = requests.post(ai.get("ollama", "http://localhost:11434").rstrip("/") + "/api/embed",
+                             json={"model": ai["embed_model"], "input": titles}, timeout=60)
+        resp.raise_for_status()
+        vectors = resp.json()["embeddings"]
+        return vectors if len(vectors) == len(titles) else None
+    except Exception as exc:
+        log.warning("Local AI not available for grouping stories (%s); using word matching", exc)
+        return None
+
+
+def cosine(u, v):
+    dot = sum(x * y for x, y in zip(u, v))
+    norm = math.sqrt(sum(x * x for x in u)) * math.sqrt(sum(y * y for y in v))
+    return dot / norm if norm else 0.0
+
+
+def group_stories(cfg, rows):
+    """rows: newest first. Returns [(lead_row, [other rows about the same story])].
+
+    Each headline is compared with the lead (newest) headline of every group so far; it joins
+    the first group that is clearly the same story. Comparing with the lead only (not with
+    every member) stops chains like A~B, B~C pulling unrelated A and C together."""
+    words = [title_words(r[2]) for r in rows]
+    df = {}
+    for ws in words:
+        for w in ws:
+            df[w] = df.get(w, 0) + 1
+    n = len(rows)
+    weight = lambda w: math.log((n + 1) / (df.get(w, 0) + 0.5))   # rarer word, bigger weight
+    ai = cfg.get("ai") or {}
+    vectors = embed_titles(cfg, [r[2] for r in rows])
+    same_words = ai.get("word_threshold", 0.5)
+    same_meaning, min_words = ai.get("embed_threshold", 0.88), ai.get("embed_min_words", 0.25)
+
+    groups = []   # [(lead index, [member indexes])]
+    for i in range(n):
+        for lead, members in groups:
+            if rows[i][2].lower() == rows[lead][2].lower():
+                members.append(i)
+                break
+            if conflicting_names(rows[i][2], rows[lead][2]):
+                continue
+            ws = word_similarity(words[i], words[lead], weight)
+            if ws >= same_words or (
+                    vectors and ws >= min_words and cosine(vectors[i], vectors[lead]) >= same_meaning):
+                members.append(i)
+                break
+        else:
+            groups.append((i, []))
+    return [(rows[lead], [rows[m] for m in members]) for lead, members in groups]
+
+
 def select_items(cfg, db, since, now):
     """New items (first seen after `since`, published within 24 h), grouped by subject.
 
+    The same story from several outlets is shown once, with the others listed as "also".
     Within a subject, sources take turns so one busy feed can't crowd out the others.
     """
     rows = db.execute(
@@ -382,14 +489,15 @@ def select_items(cfg, db, since, now):
         "WHERE first_seen > ? AND (published IS NULL OR published >= ?) "
         "ORDER BY coalesce(published, first_seen) DESC",
         (since.isoformat(), (now - WINDOW).isoformat())).fetchall()
+    stories = group_stories(cfg, rows)
     limit = cfg.get("max_items_per_subject", 10)
-    grouped, seen_titles = {}, set()
+    grouped = {}
     for subject in cfg["subjects"]:
         by_source = {}
-        for subj, source, title, link, when in rows:
-            if subj == subject and title.lower() not in seen_titles:
-                seen_titles.add(title.lower())  # same headline from two outlets/subjects
-                by_source.setdefault(source, []).append((title, link, source, when))
+        for (subj, source, title, link, when), others in stories:
+            if subj == subject:
+                also = [{"source": o[1], "link": o[3]} for o in others if o[1] != source]
+                by_source.setdefault(source, []).append((title, link, source, when, also))
         queues, picked = list(by_source.values()), []
         while len(picked) < limit and any(queues):
             for q in queues:
@@ -437,7 +545,9 @@ def render_edition(cfg, edition, now, since, grouped, missing, alerts, health=()
             lines.append(f"\n**{name}:** no warnings in effect")
     for subject, items in grouped.items():
         lines.append(f"\n### {subject}")
-        lines += [f"- {md_escape(t)} — [{md_escape(src)}]({link})" for t, link, src, _ in items]
+        for t, link, src, _, also in items:
+            extra = ", ".join(f"[{md_escape(a['source'])}]({a['link']})" for a in also)
+            lines.append(f"- {md_escape(t)} — [{md_escape(src)}]({link})" + (f" · also {extra}" if extra else ""))
         if not items:
             lines.append("- _No new items_")
     return "\n".join(lines)
@@ -576,8 +686,8 @@ def produce(cfg, db, edition, slot, now, fetch, stubs=(), scheduled=True):
     missing = [{"name": source_name(cfg, url), "subject": subject_of[url]} for url in failed]
     sections = {edition: render_edition(cfg, edition, now, since, grouped, missing, alerts, health)}
     store_edition(db, edition, "ok", slot, now, since, {
-        "subjects": {subject: [{"title": t, "link": link, "source": src, "time": when}
-                               for t, link, src, when in items]
+        "subjects": {subject: [{"title": t, "link": link, "source": src, "time": when, "also": also}
+                               for t, link, src, when, also in items]
                      for subject, items in grouped.items()},
         "missing": missing, "total_feeds": total, "alerts": alerts, "health": health})
     for s, name in stubs:

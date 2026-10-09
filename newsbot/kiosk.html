@@ -199,7 +199,9 @@
       var stories = [];
       eds.forEach(function (e, i) {
         (e.subjects[name] || []).forEach(function (st) {
-          stories.push({ title: st.title, source: st.source, time: st.time, isNew: fresh && i === 0 });
+          var also = (st.also || []).map(function (a) { return a.source; });
+          stories.push({ title: st.title, source: st.source + (also.length ? " + " + also.join(", ") : ""),
+                         time: st.time, isNew: fresh && i === 0 });
         });
       });
       return { name: name, stories: stories.slice(0, MAX) };

@@ -64,3 +64,10 @@ Evening = "19:00"
 "https://www.aljazeera.com/xml/rss/all.xml" = "Al Jazeera"
 "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml" = "BBC Science"
 "https://feeds.bbci.co.uk/news/technology/rss.xml" = "BBC Technology"
+
+# Optional: let your local AI (Ollama) recognise the same story told in different words.
+# First run once:  ollama pull nomic-embed-text   then remove the # from the lines below.
+# Without it (or when Ollama isn't running) stories are matched on their words alone.
+# [ai]
+# ollama = "http://localhost:11434"
+# embed_model = "nomic-embed-text"

@@ -100,6 +100,12 @@ page then goes next to it (`html_output` changes that).
   source that needs a look: one that hasn't answered 3 runs in a row, or has published
   nothing new for 2 days. The same shows as a "Source check" line on the reading page.
   (Change the limits with `fail_after_runs` / `quiet_after_hours` in `config.toml`.)
+- **The same story from several outlets is shown once**, with the others listed as
+  "also Global News, Calgary Herald". Headlines are matched on their words, giving rare words
+  (names, places) more weight than common ones like "Calgary", and two headlines that name
+  different places, people or teams are never merged. To also catch the same story told in
+  different words, use your local AI: run `ollama pull nomic-embed-text` once and enable the
+  `[ai]` lines at the end of `config.toml`. If Ollama isn't running, word matching is used.
 - Unchanged feeds aren't downloaded again: the bot asks each site "anything new since last
   time?" and most answer with an empty "no".
 - Logs are in `data/newsbot.log` (and `data/server.log` for the kiosk server).
@@ -109,6 +115,5 @@ page then goes next to it (`html_output` changes that).
 
 ## Not done yet
 
-- Step 3: grouping different headlines about the same story.
 - Step 4: neutral wording with the local AI (Qwen3 via Ollama), used only for sorting and
   flagging, never for writing facts.

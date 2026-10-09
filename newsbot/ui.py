@@ -63,6 +63,10 @@ def headline(item):
 def render_story(item, tz, ref):
     when = parse_time(item.get("time"))
     meta = esc(item.get("source", "")) + (f" · {time_tag(when, tz, ref)}" if when else "")
+    also = [f'<a href="{esc(url)}" target="_blank" rel="noopener noreferrer">{esc(a.get("source", ""))}</a>'
+            if (url := safe_url(a.get("link"))) else esc(a.get("source", "")) for a in item.get("also") or []]
+    if also:
+        meta += " · also " + ", ".join(also)
     return f'<li class="story">{headline(item)}<div class="meta">{meta}</div></li>'
 
 
