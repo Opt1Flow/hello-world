@@ -1,0 +1,4 @@
+feedparser>=6.0
+requests>=2.31
+tzdata  # Windows has no built-in timezone database for zoneinfo
+pytest  # only for running the tests
