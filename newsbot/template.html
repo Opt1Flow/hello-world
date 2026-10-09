@@ -103,6 +103,7 @@
   h2 { font-size: 1.15rem; margin: 0; }
   .ed-sub { color: var(--muted); font-size: 0.85rem; margin: 2px 0 0; }
   .note { color: var(--warn-text); font-size: 0.8rem; margin: 6px 0 0; }
+  .source-check { color: var(--muted); font-size: 0.78rem; margin: 4px 0 0; }
   .alert {
     background: var(--warn-bg); color: var(--warn-text); border-left: 4px solid var(--warn-edge);
     border-radius: var(--radius); padding: 4px 18px 8px; margin: 14px 0;
@@ -149,7 +150,7 @@
   /* While searching, every edition with a match is shown; hide the per-edition extras. */
   @media screen {
     .searching .jump, .searching .quiet, .searching .alert-quiet,
-    .searching .note, .searching .empty { display: none; }
+    .searching .note, .searching .source-check, .searching .empty { display: none; }
   }
 
   footer { color: var(--muted); font-size: 0.75rem; padding: 18px 16px 32px; border-top: 1px solid var(--line); }

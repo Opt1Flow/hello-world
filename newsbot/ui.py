@@ -132,6 +132,9 @@ def render_edition(ed, tz, latest, now):
     missing = ed.get("missing") or ed.get("failed") or []
     if missing:
         out.append(f'<p class="note">Missing this time: {esc(missing_text(missing))}</p>')
+    for h in ed.get("health") or []:
+        out.append(f'<p class="source-check">Source check: {esc(h["name"])} ({esc(h["subject"])}): '
+                   f'{esc(h["problem"])}</p>')
     out.append('</div>')
     out.append(render_alerts(ed.get("alerts"), tz, produced, latest))
     if filled:

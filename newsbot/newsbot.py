@@ -25,6 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, time as dtime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import quote, urlparse
 from zoneinfo import ZoneInfo
 
@@ -105,6 +106,9 @@ def open_db(path=None):
         CREATE TABLE IF NOT EXISTS editions (
             edition TEXT PRIMARY KEY, kind TEXT, slot TEXT, produced_at TEXT, since TEXT, data TEXT);
         CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+        CREATE TABLE IF NOT EXISTS feeds (
+            url TEXT PRIMARY KEY, first_checked TEXT, last_ok TEXT, last_new TEXT,
+            fails INTEGER DEFAULT 0, last_error TEXT, etag TEXT, modified TEXT);
     """)
     return db
 
@@ -180,7 +184,14 @@ BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/130.0 Safari/537.36")
 
 
-def make_fetcher():
+NOT_MODIFIED = SimpleNamespace(feed={}, entries=[], not_modified=True)
+
+
+def make_fetcher(validators=None):
+    """validators: {url: (etag, last_modified)} from the previous run. A site that says
+    "not modified" (HTTP 304) sends nothing, so checking an unchanged feed costs almost nothing.
+    The updated validators are left in fetch.validators."""
+    validators = dict(validators or {})
     session = requests.Session()
     # read=0: a stalled server isn't retried with the same request; see the fallback below
     retry = Retry(total=2, read=0, backoff_factor=2, status_forcelist=[429, 500, 502, 503, 504])
@@ -188,7 +199,13 @@ def make_fetcher():
     session.mount("http://", HTTPAdapter(max_retries=retry))
 
     def get(url, user_agent):
-        resp = session.get(url, timeout=(5, 20), headers={"User-Agent": user_agent})
+        headers = {"User-Agent": user_agent}
+        etag, modified = validators.get(url, (None, None))
+        if etag:
+            headers["If-None-Match"] = etag
+        if modified:
+            headers["If-Modified-Since"] = modified
+        resp = session.get(url, timeout=(5, 20), headers=headers)
         resp.raise_for_status()
         return resp
 
@@ -200,13 +217,26 @@ def make_fetcher():
                 raise
             log.info("Retrying %s as a browser (%s)", url, type(exc).__name__)
             resp = get(url, BROWSER_UA)
+        if resp.status_code == 304:
+            return NOT_MODIFIED
         # content-location (lowercase) lets feedparser turn relative links into absolute ones
         headers = {**{k.lower(): v for k, v in resp.headers.items()}, "content-location": resp.url}
         feed = feedparser.parse(io.BytesIO(resp.content), response_headers=headers)
         if feed.bozo and not feed.entries:
             raise ValueError(f"not a feed: {feed.get('bozo_exception')}")
+        if url in validators or resp.headers.get("ETag") or resp.headers.get("Last-Modified"):
+            validators[url] = (resp.headers.get("ETag"), resp.headers.get("Last-Modified"))
         return feed
+    fetch.validators = validators
     return fetch
+
+
+def news_fetcher(cfg, db):
+    """A fetcher primed with what each news feed said last time. Warning feeds are always
+    fetched in full: an unchanged warning is still a warning."""
+    news = {u for urls in cfg["subjects"].values() for u in urls}
+    rows = db.execute("SELECT url, etag, modified FROM feeds WHERE etag IS NOT NULL OR modified IS NOT NULL")
+    return make_fetcher({url: (etag, modified) for url, etag, modified in rows if url in news})
 
 
 def wait_for_network(host, limit=120):
@@ -232,17 +262,22 @@ def collect(cfg, db, fetch, now):
         if error:
             log.warning("Feed failed: %s (%s)", url, error)
             failed.append(url)
+            record_health(db, url, now, error=error)
             continue
         source = source_name(cfg, url, clean_title(feed.feed.get("title", "")))
+        new = 0
         for e in feed.entries:
             try:
                 title, link = clean_title(e.get("title", "")), clean_link(e.get("link"))
                 if not title or not link:
                     continue
-                db.execute("INSERT OR IGNORE INTO items VALUES (?,?,?,?,?,?)",
-                           (link, title, source, subject, entry_time(e, now), now.isoformat()))
+                new += db.execute("INSERT OR IGNORE INTO items VALUES (?,?,?,?,?,?)",
+                                  (link, title, source, subject, entry_time(e, now), now.isoformat())).rowcount
             except Exception as exc:  # one odd entry must not sink the edition
                 log.warning("Skipped an entry in %s: %s", url, exc)
+        record_health(db, url, now, new=new)
+    for url, (etag, modified) in getattr(fetch, "validators", {}).items():
+        db.execute("UPDATE feeds SET etag=?, modified=? WHERE url=?", (etag, modified, url))
     db.execute("DELETE FROM items WHERE first_seen < ?", ((now - 3 * WINDOW).isoformat(),))
     db.commit()
     return failed
@@ -259,6 +294,46 @@ def entry_time(entry, now):
     if when is None or when.year < 2000 or when > now + timedelta(days=1):
         return None
     return when.isoformat()
+
+
+def short_error(error):
+    """'HTTP 404' / 'ConnectTimeout': enough to see what's wrong, nothing private."""
+    response = getattr(error, "response", None)
+    return f"HTTP {response.status_code}" if response is not None else type(error).__name__
+
+
+def record_health(db, url, now, new=0, error=None):
+    db.execute("INSERT OR IGNORE INTO feeds (url, first_checked) VALUES (?, ?)", (url, now.isoformat()))
+    if error is not None:
+        db.execute("UPDATE feeds SET fails = fails + 1, last_error = ? WHERE url = ?", (short_error(error), url))
+    else:
+        db.execute("UPDATE feeds SET fails = 0, last_ok = ? WHERE url = ?", (now.isoformat(), url))
+        if new:
+            db.execute("UPDATE feeds SET last_new = ? WHERE url = ?", (now.isoformat(), url))
+
+
+def feed_health(cfg, db, now):
+    """Feeds worth a look: failing several runs in a row, or answering but with nothing new
+    for a long time (a feed that quietly stopped updating). [{name, subject, problem}]"""
+    quiet_after = timedelta(hours=cfg.get("quiet_after_hours", 48))
+    fail_after = cfg.get("fail_after_runs", 3)
+    rows = {r[0]: r for r in db.execute("SELECT url, first_checked, last_new, fails, last_error FROM feeds")}
+    found = []
+    for subject, urls in cfg["subjects"].items():
+        for url in urls:
+            if url not in rows:
+                continue
+            _, first, last_new, fails, error = rows[url]
+            if fails >= fail_after:
+                problem = f"no answer the last {fails} times ({error})"
+            elif now - datetime.fromisoformat(last_new or first) > quiet_after:
+                since = datetime.fromisoformat(last_new).astimezone(cfg["tz"]) if last_new else None
+                problem = (f"no new stories since {since:%a %d %b}" if since
+                           else f"no stories at all in {quiet_after.days} days")
+            else:
+                continue
+            found.append({"name": source_name(cfg, url), "subject": subject, "problem": problem})
+    return found
 
 
 # Environment Canada lists "No watches or warnings in effect" or "... WARNING ENDED" too.
@@ -341,13 +416,15 @@ def missing_note(missing):
     return ", ".join(f"{name} ({', '.join(dict.fromkeys(subjects))})" for name, subjects in by_name.items())
 
 
-def render_edition(cfg, edition, now, since, grouped, missing, alerts):
+def render_edition(cfg, edition, now, since, grouped, missing, alerts, health=()):
     local = now.astimezone(cfg["tz"])
     count = sum(len(v) for v in grouped.values())
     lines = [f"## {edition} — {local:%a %d %b %Y, %H:%M}",
              f"_{count} new items since {since.astimezone(cfg['tz']):%a %H:%M}_"]
     if missing:
         lines.append(f"_Missing this time: {md_escape(missing_note(missing))}_")
+    for h in health:
+        lines.append(f"_Source check: {md_escape(h['name'])} ({md_escape(h['subject'])}): {h['problem']}_")
     for group in alerts["groups"]:
         name = md_escape(group["name"])
         if group["items"]:
@@ -494,14 +571,15 @@ def produce(cfg, db, edition, slot, now, fetch, stubs=(), scheduled=True):
     since = max(filter(None, [last_ok_run(db), now - WINDOW]))
     grouped = select_items(cfg, db, since, now)
     alerts = check_alerts(cfg, fetch, now)
+    health = feed_health(cfg, db, now)
     subject_of = {url: subject for subject, urls in cfg["subjects"].items() for url in urls}
     missing = [{"name": source_name(cfg, url), "subject": subject_of[url]} for url in failed]
-    sections = {edition: render_edition(cfg, edition, now, since, grouped, missing, alerts)}
+    sections = {edition: render_edition(cfg, edition, now, since, grouped, missing, alerts, health)}
     store_edition(db, edition, "ok", slot, now, since, {
         "subjects": {subject: [{"title": t, "link": link, "source": src, "time": when}
                                for t, link, src, when in items]
                      for subject, items in grouped.items()},
-        "missing": missing, "total_feeds": total, "alerts": alerts})
+        "missing": missing, "total_feeds": total, "alerts": alerts, "health": health})
     for s, name in stubs:
         note = (f"Not produced on {s:%a %d %b} at {s:%H:%M}: the computer was off or asleep. "
                 f"Those stories are in the {edition} edition.")
@@ -547,7 +625,7 @@ def run_due(cfg, db, now, fetch=None):
                                  f"previous edition; the bot retries every 15 minutes.")
             write_html(cfg, db, now)
             return False
-        fetch = make_fetcher()
+        fetch = news_fetcher(cfg, db)
     missed = [(s, e) for s, e in slots[:-1] if run_status(db, s, e) is None]
     return produce(cfg, db, edition, slot, now, fetch, stubs=missed)
 
@@ -556,7 +634,7 @@ def run_now(cfg, db, edition, now, fetch=None):
     if edition not in cfg["editions"]:
         sys.exit(f"Unknown edition {edition!r}; choose from {', '.join(cfg['editions'])}")
     slot = max((s for s, e in recent_slots(now, cfg) if e == edition), default=now)
-    return produce(cfg, db, edition, slot, now, fetch or make_fetcher(), scheduled=False)
+    return produce(cfg, db, edition, slot, now, fetch or news_fetcher(cfg, db), scheduled=False)
 
 
 class AlreadyRunning(Exception):
@@ -654,6 +732,10 @@ def main(argv=None):
             if args.cmd == "status":
                 for row in db.execute("SELECT * FROM runs ORDER BY at DESC LIMIT 9"):
                     print(*row, sep="  |  ")
+                problems = feed_health(cfg, db, now)
+                print("\nSources:", "all fine" if not problems else "")
+                for h in problems:
+                    print(f"  {h['name']} ({h['subject']}): {h['problem']}")
                 return 0
             if args.cmd == "run":
                 updated = run_now(cfg, db, args.edition, now)

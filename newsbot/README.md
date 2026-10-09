@@ -96,7 +96,12 @@ page then goes next to it (`html_output` changes that).
 
 ## Day to day
 
-- `newsbot.py status` lists recent runs (`ok`, or `skipped` for a missed edition).
+- `newsbot.py status` lists recent runs (`ok`, or `skipped` for a missed edition) and any
+  source that needs a look: one that hasn't answered 3 runs in a row, or has published
+  nothing new for 2 days. The same shows as a "Source check" line on the reading page.
+  (Change the limits with `fail_after_runs` / `quiet_after_hours` in `config.toml`.)
+- Unchanged feeds aren't downloaded again: the bot asks each site "anything new since last
+  time?" and most answer with an empty "no".
 - Logs are in `data/newsbot.log` (and `data/server.log` for the kiosk server).
 - Change feeds, subjects, warning feeds (`[alerts]`), short source names (`[sources]`) or
   edition times in `config.toml`. Delete one line under `[editions]` to go to two
@@ -104,7 +109,6 @@ page then goes next to it (`html_output` changes that).
 
 ## Not done yet
 
-- Step 2: source health checks over time and conditional downloads.
 - Step 3: grouping different headlines about the same story.
 - Step 4: neutral wording with the local AI (Qwen3 via Ollama), used only for sorting and
   flagging, never for writing facts.
